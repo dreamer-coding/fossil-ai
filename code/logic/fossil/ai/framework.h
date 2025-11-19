@@ -28,5 +28,6 @@
 #include "jellyfish.h"
 #include "language.h"
 #include "iochat.h"
+#include "module.h"
 
 #endif /* FOSSIL_JELLYFISH_AI_FRAMEWORK_H */

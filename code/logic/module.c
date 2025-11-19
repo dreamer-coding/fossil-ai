@@ -52,6 +52,7 @@ static int _module_save_to_fson(const fossil_ai_module_t *module, const char *fi
     fossil_ai_jellyfish_fson_init(&root);
     fossil_ai_jellyfish_fson_make_object(&root);
 
+    // Basic fields
     fossil_ai_jellyfish_fson_value_t v_name, v_version, v_author, v_type, v_caps, v_loaded, v_active;
     fossil_ai_jellyfish_fson_init(&v_name);
     fossil_ai_jellyfish_fson_set_cstr(&v_name, module->name);
@@ -81,13 +82,269 @@ static int _module_save_to_fson(const fossil_ai_module_t *module, const char *fi
     fossil_ai_jellyfish_fson_set_bool(&v_active, module->active);
     fossil_ai_jellyfish_fson_object_put(&root, "active", &v_active);
 
+    // --- Block Attributes ---
+    if (module->config.type == JELLYFISH_FSON_TYPE_OBJECT) {
+        fossil_ai_jellyfish_fson_value_t attr_obj;
+        fossil_ai_jellyfish_fson_init(&attr_obj);
+        fossil_ai_jellyfish_fson_make_object(&attr_obj);
+
+        // Direct fields
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "immutable", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "immutable"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "valid", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "valid"));
+        fossil_ai_jellyfish_fson_object_put_float(&attr_obj, "confidence", fossil_ai_jellyfish_fson_object_get_float(&module->config, "confidence"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "anomaly_detected", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "anomaly_detected"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "pruned", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "pruned"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "redacted", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "redacted"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "deduplicated", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "deduplicated"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "compressed", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "compressed"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "expired", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "expired"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "trusted", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "trusted"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "conflicted", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "conflicted"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "self_healed", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "self_healed"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "auto_recovered", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "auto_recovered"));
+        fossil_ai_jellyfish_fson_object_put_i64(&attr_obj, "reserved", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "reserved"));
+        fossil_ai_jellyfish_fson_object_put_i64(&attr_obj, "error_code", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "error_code"));
+        fossil_ai_jellyfish_fson_object_put_float(&attr_obj, "conflict_score", fossil_ai_jellyfish_fson_object_get_float(&module->config, "conflict_score"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&attr_obj, "rollback_reason", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "rollback_reason"));
+
+        // Pattern recognition & comprehension extensions
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "pattern_recognized", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "pattern_recognized"));
+        fossil_ai_jellyfish_fson_object_put_bool(&attr_obj, "comprehension_success", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "comprehension_success"));
+        fossil_ai_jellyfish_fson_object_put_float(&attr_obj, "pattern_similarity", fossil_ai_jellyfish_fson_object_get_float(&module->config, "pattern_similarity"));
+        fossil_ai_jellyfish_fson_object_put_i64(&attr_obj, "pattern_id", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "pattern_id"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&attr_obj, "pattern_origin_chain", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "pattern_origin_chain"));
+
+        // Arrays: confidence_history, trust_sources, pattern_evolution, cross_chain_refs
+        fossil_ai_jellyfish_fson_value_t *v_conf_hist = fossil_ai_jellyfish_fson_object_get(&module->config, "confidence_history");
+        if (v_conf_hist) fossil_ai_jellyfish_fson_object_put(&attr_obj, "confidence_history", v_conf_hist);
+
+        fossil_ai_jellyfish_fson_value_t *v_trust_sources = fossil_ai_jellyfish_fson_object_get(&module->config, "trust_sources");
+        if (v_trust_sources) fossil_ai_jellyfish_fson_object_put(&attr_obj, "trust_sources", v_trust_sources);
+
+        fossil_ai_jellyfish_fson_value_t *v_pattern_evolution = fossil_ai_jellyfish_fson_object_get(&module->config, "pattern_evolution");
+        if (v_pattern_evolution) fossil_ai_jellyfish_fson_object_put(&attr_obj, "pattern_evolution", v_pattern_evolution);
+
+        fossil_ai_jellyfish_fson_value_t *v_cross_chain_refs = fossil_ai_jellyfish_fson_object_get(&module->config, "cross_chain_refs");
+        if (v_cross_chain_refs) fossil_ai_jellyfish_fson_object_put(&attr_obj, "cross_chain_refs", v_cross_chain_refs);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&attr_obj, "processing_cost_ms", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "processing_cost_ms"));
+        fossil_ai_jellyfish_fson_object_put_i64(&attr_obj, "resource_usage", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "resource_usage"));
+        fossil_ai_jellyfish_fson_object_put_i64(&attr_obj, "reasoning_path_length", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "reasoning_path_length"));
+        fossil_ai_jellyfish_fson_object_put_float(&attr_obj, "branch_entropy", fossil_ai_jellyfish_fson_object_get_float(&module->config, "branch_entropy"));
+        fossil_ai_jellyfish_fson_object_put_float(&attr_obj, "semantic_conflict_score", fossil_ai_jellyfish_fson_object_get_float(&module->config, "semantic_conflict_score"));
+
+        fossil_ai_jellyfish_fson_object_put(&root, "block_attributes", &attr_obj);
+        fossil_ai_jellyfish_fson_free(&attr_obj);
+    }
+
+    // --- Block Timing ---
+    if (module->config.type == JELLYFISH_FSON_TYPE_OBJECT) {
+        fossil_ai_jellyfish_fson_value_t time_obj;
+        fossil_ai_jellyfish_fson_init(&time_obj);
+        fossil_ai_jellyfish_fson_make_object(&time_obj);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "timestamp", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "timestamp"));
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "delta_ms", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "delta_ms"));
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "duration_ms", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "duration_ms"));
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "updated_at", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "updated_at"));
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "expires_at", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "expires_at"));
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "validated_at", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "validated_at"));
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "last_accessed", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "last_accessed"));
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "ttl_ms", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "ttl_ms"));
+        fossil_ai_jellyfish_fson_object_put_i64(&time_obj, "propagation_time_ms", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "propagation_time_ms"));
+
+        fossil_ai_jellyfish_fson_object_put(&root, "block_time", &time_obj);
+        fossil_ai_jellyfish_fson_free(&time_obj);
+    }
+
+    // --- Block Identity ---
+    if (module->config.type == JELLYFISH_FSON_TYPE_OBJECT) {
+        fossil_ai_jellyfish_fson_value_t id_obj;
+        fossil_ai_jellyfish_fson_init(&id_obj);
+        fossil_ai_jellyfish_fson_make_object(&id_obj);
+
+        fossil_ai_jellyfish_fson_value_t *v_commit_hash = fossil_ai_jellyfish_fson_object_get(&module->config, "commit_hash");
+        if (v_commit_hash) fossil_ai_jellyfish_fson_object_put(&id_obj, "commit_hash", v_commit_hash);
+
+        fossil_ai_jellyfish_fson_value_t *v_parent_hashes = fossil_ai_jellyfish_fson_object_get(&module->config, "parent_hashes");
+        if (v_parent_hashes) fossil_ai_jellyfish_fson_object_put(&id_obj, "parent_hashes", v_parent_hashes);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&id_obj, "parent_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "parent_count"));
+
+        fossil_ai_jellyfish_fson_value_t *v_tree_hash = fossil_ai_jellyfish_fson_object_get(&module->config, "tree_hash");
+        if (v_tree_hash) fossil_ai_jellyfish_fson_object_put(&id_obj, "tree_hash", v_tree_hash);
+
+        fossil_ai_jellyfish_fson_value_t *v_author_id = fossil_ai_jellyfish_fson_object_get(&module->config, "author_id");
+        if (v_author_id) fossil_ai_jellyfish_fson_object_put(&id_obj, "author_id", v_author_id);
+
+        fossil_ai_jellyfish_fson_value_t *v_committer_id = fossil_ai_jellyfish_fson_object_get(&module->config, "committer_id");
+        if (v_committer_id) fossil_ai_jellyfish_fson_object_put(&id_obj, "committer_id", v_committer_id);
+
+        fossil_ai_jellyfish_fson_value_t *v_signature = fossil_ai_jellyfish_fson_object_get(&module->config, "signature");
+        if (v_signature) fossil_ai_jellyfish_fson_object_put(&id_obj, "signature", v_signature);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&id_obj, "signature_len", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "signature_len"));
+        fossil_ai_jellyfish_fson_object_put_i64(&id_obj, "commit_index", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "commit_index"));
+        fossil_ai_jellyfish_fson_object_put_i64(&id_obj, "branch_id", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "branch_id"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&id_obj, "commit_message", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "commit_message"));
+        fossil_ai_jellyfish_fson_object_put_bool(&id_obj, "is_merge_commit", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "is_merge_commit"));
+        fossil_ai_jellyfish_fson_object_put_bool(&id_obj, "detached", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "detached"));
+        fossil_ai_jellyfish_fson_object_put_i64(&id_obj, "reserved", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "reserved"));
+        fossil_ai_jellyfish_fson_object_put_i64(&id_obj, "revision", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "revision"));
+
+        fossil_ai_jellyfish_fson_value_t *v_origin_chain_id = fossil_ai_jellyfish_fson_object_get(&module->config, "origin_chain_id");
+        if (v_origin_chain_id) fossil_ai_jellyfish_fson_object_put(&id_obj, "origin_chain_id", v_origin_chain_id);
+
+        fossil_ai_jellyfish_fson_object_put_cstr(&id_obj, "fork_reason", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "fork_reason"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&id_obj, "branch_reason", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "branch_reason"));
+
+        fossil_ai_jellyfish_fson_object_put(&root, "block_identity", &id_obj);
+        fossil_ai_jellyfish_fson_free(&id_obj);
+    }
+
+    // --- Block Classification ---
+    if (module->config.type == JELLYFISH_FSON_TYPE_OBJECT) {
+        fossil_ai_jellyfish_fson_value_t class_obj;
+        fossil_ai_jellyfish_fson_init(&class_obj);
+        fossil_ai_jellyfish_fson_make_object(&class_obj);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&class_obj, "derived_from_index", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "derived_from_index"));
+
+        fossil_ai_jellyfish_fson_value_t *v_cross_refs = fossil_ai_jellyfish_fson_object_get(&module->config, "cross_refs");
+        if (v_cross_refs) fossil_ai_jellyfish_fson_object_put(&class_obj, "cross_refs", v_cross_refs);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&class_obj, "cross_ref_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "cross_ref_count"));
+
+        fossil_ai_jellyfish_fson_value_t *v_forward_refs = fossil_ai_jellyfish_fson_object_get(&module->config, "forward_refs");
+        if (v_forward_refs) fossil_ai_jellyfish_fson_object_put(&class_obj, "forward_refs", v_forward_refs);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&class_obj, "forward_ref_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "forward_ref_count"));
+        fossil_ai_jellyfish_fson_object_put_i64(&class_obj, "reasoning_depth", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "reasoning_depth"));
+        fossil_ai_jellyfish_fson_object_put_i64(&class_obj, "reserved", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "reserved"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&class_obj, "classification_reason", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "classification_reason"));
+
+        fossil_ai_jellyfish_fson_value_t *v_tags = fossil_ai_jellyfish_fson_object_get(&module->config, "tags");
+        if (v_tags) fossil_ai_jellyfish_fson_object_put(&class_obj, "tags", v_tags);
+
+        fossil_ai_jellyfish_fson_object_put_float(&class_obj, "similarity_score", fossil_ai_jellyfish_fson_object_get_float(&module->config, "similarity_score"));
+        fossil_ai_jellyfish_fson_object_put_bool(&class_obj, "is_hallucinated", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "is_hallucinated"));
+        fossil_ai_jellyfish_fson_object_put_bool(&class_obj, "is_contradicted", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "is_contradicted"));
+        fossil_ai_jellyfish_fson_object_put_float(&class_obj, "semantic_conflict_score", fossil_ai_jellyfish_fson_object_get_float(&module->config, "semantic_conflict_score"));
+
+        fossil_ai_jellyfish_fson_value_t *v_semantic_meta = fossil_ai_jellyfish_fson_object_get(&module->config, "semantic_meta");
+        if (v_semantic_meta) fossil_ai_jellyfish_fson_object_put(&class_obj, "semantic_meta", v_semantic_meta);
+
+        fossil_ai_jellyfish_fson_object_put_cstr(&class_obj, "matched_pattern_name", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "matched_pattern_name"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&class_obj, "comprehension_note", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "comprehension_note"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&class_obj, "pattern_origin_chain", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "pattern_origin_chain"));
+
+        fossil_ai_jellyfish_fson_value_t *v_pattern_evolution = fossil_ai_jellyfish_fson_object_get(&module->config, "pattern_evolution");
+        if (v_pattern_evolution) fossil_ai_jellyfish_fson_object_put(&class_obj, "pattern_evolution", v_pattern_evolution);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&class_obj, "pattern_evolution_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "pattern_evolution_count"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&class_obj, "unique_comprehension_id", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "unique_comprehension_id"));
+
+        fossil_ai_jellyfish_fson_object_put(&root, "block_classification", &class_obj);
+        fossil_ai_jellyfish_fson_free(&class_obj);
+    }
+
+    // --- Block IO ---
+    if (module->config.type == JELLYFISH_FSON_TYPE_OBJECT) {
+        fossil_ai_jellyfish_fson_value_t io_obj;
+        fossil_ai_jellyfish_fson_init(&io_obj);
+        fossil_ai_jellyfish_fson_make_object(&io_obj);
+
+        fossil_ai_jellyfish_fson_object_put_cstr(&io_obj, "input", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "input"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&io_obj, "output", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "output"));
+        fossil_ai_jellyfish_fson_object_put_i64(&io_obj, "input_len", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "input_len"));
+        fossil_ai_jellyfish_fson_object_put_i64(&io_obj, "output_len", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "output_len"));
+
+        fossil_ai_jellyfish_fson_value_t *v_input_tokens = fossil_ai_jellyfish_fson_object_get(&module->config, "input_tokens");
+        if (v_input_tokens) fossil_ai_jellyfish_fson_object_put(&io_obj, "input_tokens", v_input_tokens);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&io_obj, "input_token_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "input_token_count"));
+
+        fossil_ai_jellyfish_fson_value_t *v_output_tokens = fossil_ai_jellyfish_fson_object_get(&module->config, "output_tokens");
+        if (v_output_tokens) fossil_ai_jellyfish_fson_object_put(&io_obj, "output_tokens", v_output_tokens);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&io_obj, "output_token_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "output_token_count"));
+
+        fossil_ai_jellyfish_fson_value_t *v_input_token_probabilities = fossil_ai_jellyfish_fson_object_get(&module->config, "input_token_probabilities");
+        if (v_input_token_probabilities) fossil_ai_jellyfish_fson_object_put(&io_obj, "input_token_probabilities", v_input_token_probabilities);
+
+        fossil_ai_jellyfish_fson_value_t *v_output_token_probabilities = fossil_ai_jellyfish_fson_object_get(&module->config, "output_token_probabilities");
+        if (v_output_token_probabilities) fossil_ai_jellyfish_fson_object_put(&io_obj, "output_token_probabilities", v_output_token_probabilities);
+
+        fossil_ai_jellyfish_fson_object_put_bool(&io_obj, "compressed", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "compressed"));
+        fossil_ai_jellyfish_fson_object_put_bool(&io_obj, "redacted", fossil_ai_jellyfish_fson_object_get_bool(&module->config, "redacted"));
+        fossil_ai_jellyfish_fson_object_put_i64(&io_obj, "reserved", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "reserved"));
+
+        fossil_ai_jellyfish_fson_value_t *v_io_meta = fossil_ai_jellyfish_fson_object_get(&module->config, "io_meta");
+        if (v_io_meta) fossil_ai_jellyfish_fson_object_put(&io_obj, "io_meta", v_io_meta);
+
+        fossil_ai_jellyfish_fson_value_t *v_pattern_tokens = fossil_ai_jellyfish_fson_object_get(&module->config, "pattern_tokens");
+        if (v_pattern_tokens) fossil_ai_jellyfish_fson_object_put(&io_obj, "pattern_tokens", v_pattern_tokens);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&io_obj, "pattern_token_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "pattern_token_count"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&io_obj, "comprehension_hint", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "comprehension_hint"));
+
+        fossil_ai_jellyfish_fson_value_t *v_attention_map = fossil_ai_jellyfish_fson_object_get(&module->config, "attention_map");
+        if (v_attention_map) fossil_ai_jellyfish_fson_object_put(&io_obj, "attention_map", v_attention_map);
+
+        fossil_ai_jellyfish_fson_value_t *v_prior_reasoning_refs = fossil_ai_jellyfish_fson_object_get(&module->config, "prior_reasoning_refs");
+        if (v_prior_reasoning_refs) fossil_ai_jellyfish_fson_object_put(&io_obj, "prior_reasoning_refs", v_prior_reasoning_refs);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&io_obj, "prior_reasoning_ref_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "prior_reasoning_ref_count"));
+
+        fossil_ai_jellyfish_fson_object_put(&root, "block_io", &io_obj);
+        fossil_ai_jellyfish_fson_free(&io_obj);
+    }
+
+    // --- Block FSON Attachments ---
+    if (module->config.type == JELLYFISH_FSON_TYPE_OBJECT) {
+        fossil_ai_jellyfish_fson_value_t fson_obj;
+        fossil_ai_jellyfish_fson_init(&fson_obj);
+        fossil_ai_jellyfish_fson_make_object(&fson_obj);
+
+        fossil_ai_jellyfish_fson_value_t *v_fson_root = fossil_ai_jellyfish_fson_object_get(&module->config, "fson_root");
+        if (v_fson_root) fossil_ai_jellyfish_fson_object_put(&fson_obj, "root", v_fson_root);
+
+        fossil_ai_jellyfish_fson_value_t *v_attachments = fossil_ai_jellyfish_fson_object_get(&module->config, "attachments");
+        if (v_attachments) fossil_ai_jellyfish_fson_object_put(&fson_obj, "attachments", v_attachments);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&fson_obj, "attachment_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "attachment_count"));
+
+        fossil_ai_jellyfish_fson_object_put(&root, "block_fson", &fson_obj);
+        fossil_ai_jellyfish_fson_free(&fson_obj);
+    }
+
+    // --- Block Audit Metadata ---
+    if (module->config.type == JELLYFISH_FSON_TYPE_OBJECT) {
+        fossil_ai_jellyfish_fson_value_t audit_obj;
+        fossil_ai_jellyfish_fson_init(&audit_obj);
+        fossil_ai_jellyfish_fson_make_object(&audit_obj);
+
+        fossil_ai_jellyfish_fson_value_t *v_audit_meta_root = fossil_ai_jellyfish_fson_object_get(&module->config, "audit_meta_root");
+        if (v_audit_meta_root) fossil_ai_jellyfish_fson_object_put(&audit_obj, "audit_meta_root", v_audit_meta_root);
+
+        fossil_ai_jellyfish_fson_value_t *v_audit_trail = fossil_ai_jellyfish_fson_object_get(&module->config, "audit_trail");
+        if (v_audit_trail) fossil_ai_jellyfish_fson_object_put(&audit_obj, "audit_trail", v_audit_trail);
+
+        fossil_ai_jellyfish_fson_object_put_i64(&audit_obj, "audit_trail_count", fossil_ai_jellyfish_fson_object_get_i64(&module->config, "audit_trail_count"));
+        fossil_ai_jellyfish_fson_object_put_cstr(&audit_obj, "validation_reason", fossil_ai_jellyfish_fson_object_get_cstr(&module->config, "validation_reason"));
+        fossil_ai_jellyfish_fson_object_put_float(&audit_obj, "risk_score", fossil_ai_jellyfish_fson_object_get_float(&module->config, "risk_score"));
+
+        fossil_ai_jellyfish_fson_object_put(&root, "block_audit_meta", &audit_obj);
+        fossil_ai_jellyfish_fson_free(&audit_obj);
+    }
+
     // Serialize config as FSON (using Jellyfish API)
     fossil_ai_jellyfish_fson_value_t config_copy;
     fossil_ai_jellyfish_fson_init(&config_copy);
     fossil_ai_jellyfish_fson_copy(&module->config, &config_copy);
     fossil_ai_jellyfish_fson_object_put(&root, "config", &config_copy);
 
-    // Serialize FSON to string (assumes you have a function for this)
+    // Serialize FSON to string
     char *fson_str = fossil_ai_jellyfish_fson_serialize(&root);
     if (fson_str) {
         fprintf(fp, "%s\n", fson_str);

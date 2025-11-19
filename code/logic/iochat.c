@@ -98,15 +98,142 @@ static void record_system_block(fossil_ai_jellyfish_chain_t *chain, const char *
     fossil_ai_jellyfish_learn(chain, "[system]", msg);
 
     if (chain->count > 0) {
-        fossil_ai_jellyfish_block_t *b = &chain->commits[chain->count - 1];
+        fossil_ai_jellyfish_block_t *b = fossil_ai_jellyfish_get(chain, chain->count - 1);
         fossil_ai_jellyfish_mark_immutable(b);
         fossil_ai_jellyfish_block_set_message(b, "system-context");
-        if (chain->count == 1)
-            b->block_type = JELLY_COMMIT_INIT;
-        else
-            b->block_type = JELLY_COMMIT_TAG;
+        fossil_ai_jellyfish_block_set_type(b, (chain->count == 1) ? JELLY_COMMIT_INIT : JELLY_COMMIT_TAG);
     }
     log_hashed_event("[system-block]", "[system]", msg);
+}
+
+// --- Slash Command Support ---
+
+static int handle_slash_command(const char *input, char *output, size_t size, fossil_ai_jellyfish_chain_t *chain) {
+    if (!input || input[0] != '/') return 0; // Not a slash command
+
+    // /summary
+    if (strncmp(input, "/summary", 8) == 0) {
+        if (fossil_ai_iochat_summarize_session(chain, output, size) == 0) {
+            return 1;
+        } else {
+            strncpy(output, "No summary available.", size - 1);
+            output[size - 1] = '\0';
+            return 1;
+        }
+    }
+    // /turns
+    if (strncmp(input, "/turns", 6) == 0) {
+        int turns = fossil_ai_iochat_turn_count(chain);
+        snprintf(output, size, "Turn count: %d", turns);
+        return 1;
+    }
+    // /trust
+    if (strncmp(input, "/trust", 6) == 0) {
+        float trust = fossil_ai_jellyfish_chain_trust_score(chain);
+        snprintf(output, size, "Chain trust score: %.3f", trust);
+        return 1;
+    }
+    // /end
+    if (strncmp(input, "/end", 4) == 0) {
+        strncpy(output, "Session end requested.", size - 1);
+        output[size - 1] = '\0';
+        return 2; // Special code for session end
+    }
+    // /help
+    if (strncmp(input, "/help", 5) == 0) {
+        strncpy(output,
+            "Slash commands:\n"
+            "/summary - Summarize session\n"
+            "/turns - Show turn count\n"
+            "/trust - Show chain trust score\n"
+            "/export <file> - Export session history\n"
+            "/import <file> - Import context\n"
+            "/end - End session\n"
+            "/help - Show this help\n",
+            size - 1);
+        output[size - 1] = '\0';
+        return 1;
+    }
+    // /export <filepath>
+    if (strncmp(input, "/export ", 8) == 0) {
+        const char *filepath = input + 8;
+        if (strlen(filepath) > 0) {
+            int res = fossil_ai_iochat_export_history(chain, filepath);
+            if (res == 0) {
+                snprintf(output, size, "Session history exported to: %s", filepath);
+            } else {
+                snprintf(output, size, "Failed to export session history to: %s", filepath);
+            }
+        } else {
+            strncpy(output, "Usage: /export <filepath>", size - 1);
+            output[size - 1] = '\0';
+        }
+        return 1;
+    }
+    // /import <filepath>
+    if (strncmp(input, "/import ", 8) == 0) {
+        const char *filepath = input + 8;
+        if (strlen(filepath) > 0) {
+            int res = fossil_ai_iochat_import_context(chain, filepath);
+            if (res == 0) {
+                snprintf(output, size, "Context imported from: %s", filepath);
+            } else {
+                snprintf(output, size, "Failed to import context from: %s", filepath);
+            }
+        } else {
+            strncpy(output, "Usage: /import <filepath>", size - 1);
+            output[size - 1] = '\0';
+        }
+        return 1;
+    }
+    // /inject <message>
+    if (strncmp(input, "/inject ", 8) == 0) {
+        const char *msg = input + 8;
+        if (strlen(msg) > 0) {
+            int res = fossil_ai_iochat_inject_system_message(chain, msg);
+            if (res == 0) {
+                snprintf(output, size, "Injected system message: %s", msg);
+            } else {
+                snprintf(output, size, "Failed to inject system message.");
+            }
+        } else {
+            strncpy(output, "Usage: /inject <message>", size - 1);
+            output[size - 1] = '\0';
+        }
+        return 1;
+    }
+    // /learn <input>|<output>
+    if (strncmp(input, "/learn ", 7) == 0) {
+        const char *args = input + 7;
+        const char *sep = strchr(args, '|');
+        if (sep && sep != args && *(sep + 1)) {
+            char inbuf[128], outbuf[128];
+            size_t inlen = (size_t)(sep - args);
+            size_t outlen = strlen(sep + 1);
+            if (inlen < sizeof(inbuf) && outlen < sizeof(outbuf)) {
+                strncpy(inbuf, args, inlen);
+                inbuf[inlen] = '\0';
+                strncpy(outbuf, sep + 1, sizeof(outbuf) - 1);
+                outbuf[sizeof(outbuf) - 1] = '\0';
+                int res = fossil_ai_iochat_learn_response(chain, inbuf, outbuf);
+                if (res == 0) {
+                    snprintf(output, size, "Learned response for \"%s\"", inbuf);
+                } else {
+                    snprintf(output, size, "Failed to learn response.");
+                }
+            } else {
+                strncpy(output, "Input/output too long.", size - 1);
+                output[size - 1] = '\0';
+            }
+        } else {
+            strncpy(output, "Usage: /learn <input>|<output>", size - 1);
+            output[size - 1] = '\0';
+        }
+        return 1;
+    }
+    // Unknown command
+    snprintf(output, size, "Unknown slash command: %s", input);
+    return 1;
 }
 
 // --- API Functions ---
@@ -148,6 +275,17 @@ int fossil_ai_iochat_start(const char *context_name, fossil_ai_jellyfish_chain_t
 
 int fossil_ai_iochat_respond(fossil_ai_jellyfish_chain_t *chain, const char *input, char *output, size_t size) {
     if (!chain || !input || !output || size == 0) return -1;
+
+    // Slash command support
+    int slash_result = handle_slash_command(input, output, size, chain);
+    if (slash_result == 1) {
+        log_session_line(output);
+        return 0;
+    }
+    if (slash_result == 2) {
+        log_session_line(output);
+        return 1; // Indicate session end requested
+    }
 
     float confidence = 0.0f;
     const fossil_ai_jellyfish_block_t *matched_block = NULL;
@@ -233,10 +371,10 @@ int fossil_ai_iochat_inject_system_message(fossil_ai_jellyfish_chain_t *chain, c
     fossil_ai_jellyfish_learn(chain, "[system]", message);
 
     if (chain->count > 0) {
-        fossil_ai_jellyfish_block_t *b = &chain->commits[chain->count - 1];
+        fossil_ai_jellyfish_block_t *b = fossil_ai_jellyfish_get(chain, chain->count - 1);
         fossil_ai_jellyfish_mark_immutable(b);
         fossil_ai_jellyfish_block_set_message(b, "system-injected");
-        b->block_type = JELLY_COMMIT_PATCH;
+        fossil_ai_jellyfish_block_set_type(b, JELLY_COMMIT_PATCH);
     }
 
     log_hashed_event("[inject-system]", "[system]", message);
@@ -323,53 +461,13 @@ int fossil_ai_iochat_filter_recent(const fossil_ai_jellyfish_chain_t *chain, fos
 int fossil_ai_iochat_export_history(const fossil_ai_jellyfish_chain_t *chain, const char *filepath) {
     if (!chain || !filepath) return -1;
 
-    FILE *f = fopen(filepath, "w");
-    if (!f) return -1;
-
-    for (size_t i = 0; i < chain->count; ++i) {
-        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-        if (!b->attributes.valid) continue;
-        fprintf(f, "[%s] => %s\n", b->io.input, b->io.output);
-    }
-
-    fclose(f);
-    return 0;
+    // Use updated persistence API
+    return fossil_ai_jellyfish_save(chain, filepath);
 }
 
 int fossil_ai_iochat_import_context(fossil_ai_jellyfish_chain_t *chain, const char *filepath) {
     if (!chain || !filepath) return -1;
 
-    FILE *f = fopen(filepath, "r");
-    if (!f) return -1;
-
-    char line[512];
-    while (fgets(line, sizeof(line), f)) {
-        char *arrow = strstr(line, "=>");
-        if (!arrow) continue;
-
-        *arrow = '\0';
-        char *input = line;
-        char *output = arrow + 2;
-
-        while (*input == '[') ++input;
-        char *end = strchr(input, ']');
-        if (end) *end = '\0';
-
-        while (*output == ' ') ++output;
-        end = strchr(output, '\n');
-        if (end) *end = '\0';
-
-        if (chain->count >= FOSSIL_JELLYFISH_MAX_MEM) break;
-        if (fossil_ai_jellyfish_detect_conflict(chain, input, output) == 0) {
-            fossil_ai_jellyfish_learn(chain, input, output);
-            log_hashed_event("[import-learn]", input, output);
-            if (chain->count > 0) {
-                fossil_ai_jellyfish_block_t *b = &chain->commits[chain->count - 1];
-                b->block_type = JELLY_COMMIT_IMPORT;
-            }
-        }
-    }
-
-    fclose(f);
-    return 0;
+    // Use updated persistence API
+    return fossil_ai_jellyfish_load(chain, filepath);
 }

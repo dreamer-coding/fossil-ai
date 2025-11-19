@@ -32,13 +32,11 @@ void fossil_ai_lang_process(const fossil_ai_lang_pipeline_t *pipe, const char *i
     if (pipe->normalize) {
         fossil_ai_lang_normalize(input, working, sizeof(working));
         src = working;
-    
-        // Safe copy with guaranteed null-termination
         snprintf(out->normalized, sizeof(out->normalized), "%s", working);
     }
 
     if (pipe->tokenize) {
-        out->token_count = fossil_ai_lang_tokenize(src, out->tokens, 64);
+        out->token_count = fossil_ai_jellyfish_tokenize(src, out->tokens, 64);
     }
 
     if (pipe->detect_emotion) {
@@ -63,24 +61,8 @@ void fossil_ai_lang_process(const fossil_ai_lang_pipeline_t *pipe, const char *i
 }
 
 size_t fossil_ai_lang_tokenize(const char *input, char tokens[][FOSSIL_JELLYFISH_TOKEN_SIZE], size_t max_tokens) {
-    size_t count = 0, len = strlen(input);
-    char word[FOSSIL_JELLYFISH_TOKEN_SIZE] = {0};
-    size_t wi = 0;
-
-    for (size_t i = 0; i <= len; ++i) {
-        char c = input[i];
-        if (isalnum((unsigned char)c)) {
-            if (wi < FOSSIL_JELLYFISH_TOKEN_SIZE - 1)
-                word[wi++] = tolower((unsigned char)c);
-        } else {
-            if (wi > 0 && count < max_tokens) {
-                word[wi] = '\0';
-                strncpy(tokens[count++], word, FOSSIL_JELLYFISH_TOKEN_SIZE);
-                wi = 0;
-            }
-        }
-    }
-    return count;
+    // Delegate to Jellyfish API
+    return fossil_ai_jellyfish_tokenize(input, tokens, max_tokens);
 }
 
 bool fossil_ai_lang_is_question(const char *input) {
@@ -124,7 +106,7 @@ float fossil_ai_lang_detect_emotion(const char *input) {
 
     float score = 0.0f;
     char tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
-    size_t n = fossil_ai_lang_tokenize(input, tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t n = fossil_ai_jellyfish_tokenize(input, tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
     for (size_t i = 0; i < n; ++i) {
         for (size_t j = 0; j < sizeof(positive) / sizeof(positive[0]); ++j)
@@ -163,18 +145,16 @@ int fossil_ai_lang_align_truth(const fossil_ai_jellyfish_chain_t *chain, const c
 
     // Exact match pass
     for (size_t i = 0; i < chain->count; ++i) {
-        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-        if (!b->attributes.valid || b->attributes.pruned || b->attributes.redacted)
+        fossil_ai_jellyfish_block_t *b = fossil_ai_jellyfish_get((fossil_ai_jellyfish_chain_t *)chain, i);
+        if (!b || !b->attributes.valid || b->attributes.pruned || b->attributes.redacted)
             continue;
 
         if (strcmp(input, b->io.input) == 0) {
-            // Negative / contradiction markers
             if (b->classify.is_contradicted || b->classify.is_hallucinated)
                 return -1;
             if (strcmp(b->io.output, "false") == 0 || strcmp(b->io.output, "incorrect") == 0)
                 return -1;
 
-            // Strongly trusted
             if (b->attributes.trusted || b->block_type == JELLY_COMMIT_VALIDATE)
                 return 2;
 
@@ -186,8 +166,8 @@ int fossil_ai_lang_align_truth(const fossil_ai_jellyfish_chain_t *chain, const c
     float best_sim = 0.0f;
     int best_score = 0;
     for (size_t i = 0; i < chain->count; ++i) {
-        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-        if (!b->attributes.valid) continue;
+        fossil_ai_jellyfish_block_t *b = fossil_ai_jellyfish_get((fossil_ai_jellyfish_chain_t *)chain, i);
+        if (!b || !b->attributes.valid) continue;
 
         float sim = fossil_ai_lang_similarity(input, b->io.input);
         if (sim > best_sim) {
@@ -203,7 +183,7 @@ int fossil_ai_lang_align_truth(const fossil_ai_jellyfish_chain_t *chain, const c
         }
     }
 
-    return best_score; // 2 validated, 1 aligned, 0 unknown, -1 contradiction
+    return best_score;
 }
 
 float fossil_ai_lang_estimate_trust(const fossil_ai_jellyfish_chain_t *chain, const char *input) {
@@ -321,7 +301,7 @@ void fossil_ai_lang_normalize(const char *input, char *out, size_t out_size) {
 
 void fossil_ai_lang_summarize(const char *input, char *out, size_t out_size) {
     char tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
-    size_t token_count = fossil_ai_lang_tokenize(input, tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t token_count = fossil_ai_jellyfish_tokenize(input, tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
     size_t out_len = 0;
     for (size_t i = 0; i < token_count && out_len < out_size - 1; ++i) {
@@ -353,7 +333,7 @@ void fossil_ai_lang_extract_focus(const char *input, char *out, size_t out_size)
     };
 
     char tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
-    size_t count = fossil_ai_lang_tokenize(input, tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t count = fossil_ai_jellyfish_tokenize(input, tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
     for (size_t i = 0; i < count; ++i) {
         int skip = 0;
@@ -371,7 +351,6 @@ void fossil_ai_lang_extract_focus(const char *input, char *out, size_t out_size)
         }
     }
 
-    // fallback
     strncpy(out, count > 0 ? tokens[0] : "", out_size - 1);
     out[out_size - 1] = '\0';
 }
@@ -380,8 +359,8 @@ float fossil_ai_lang_similarity(const char *a, const char *b) {
     char tokens_a[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
     char tokens_b[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
 
-    size_t count_a = fossil_ai_lang_tokenize(a, tokens_a, FOSSIL_JELLYFISH_MAX_TOKENS);
-    size_t count_b = fossil_ai_lang_tokenize(b, tokens_b, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t count_a = fossil_ai_jellyfish_tokenize(a, tokens_a, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t count_b = fossil_ai_jellyfish_tokenize(b, tokens_b, FOSSIL_JELLYFISH_MAX_TOKENS);
 
     size_t match = 0;
     for (size_t i = 0; i < count_a; ++i) {
@@ -396,7 +375,7 @@ float fossil_ai_lang_similarity(const char *a, const char *b) {
     size_t total = count_a + count_b;
     if (total == 0) return 0.0f;
 
-    return (2.0f * match) / total; // Jaccard-based estimate
+    return (2.0f * match) / total;
 }
 
 void fossil_ai_lang_trace_log(const char *category, const char *input, float score) {

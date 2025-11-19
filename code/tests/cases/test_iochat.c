@@ -55,9 +55,11 @@ FOSSIL_TEST_CASE(c_test_iochat_start_and_end_session) {
     fossil_ai_jellyfish_chain_t chain;
     fossil_ai_jellyfish_init(&chain);
 
+    // Start a new session, expect success
     int start_result = fossil_ai_iochat_start("test_session", &chain);
     ASSUME_ITS_EQUAL_I32(start_result, 0);
 
+    // End the session, expect success
     int end_result = fossil_ai_iochat_end(&chain);
     ASSUME_ITS_EQUAL_I32(end_result, 0);
 }
@@ -67,13 +69,18 @@ FOSSIL_TEST_CASE(c_test_iochat_respond_known_and_unknown) {
     fossil_ai_jellyfish_init(&chain);
 
     fossil_ai_iochat_start("chat", &chain);
+
+    // Learn a known response
     fossil_ai_iochat_learn_response(&chain, "hi", "hello there!");
 
     char output[64] = {0};
+
+    // Respond to known input
     int found = fossil_ai_iochat_respond(&chain, "hi", output, sizeof(output));
     ASSUME_ITS_EQUAL_I32(found, 0);
     ASSUME_ITS_EQUAL_CSTR(output, "hello there!");
 
+    // Respond to unknown input
     int not_found = fossil_ai_iochat_respond(&chain, "unknown", output, sizeof(output));
     ASSUME_ITS_EQUAL_I32(not_found, -1);
     ASSUME_ITS_TRUE(strstr(output, "not sure") != NULL);
@@ -85,9 +92,11 @@ FOSSIL_TEST_CASE(c_test_iochat_inject_system_message_and_immutable) {
     fossil_ai_jellyfish_chain_t chain;
     fossil_ai_jellyfish_init(&chain);
 
+    // Inject a system message
     int result = fossil_ai_iochat_inject_system_message(&chain, "System Ready");
     ASSUME_ITS_EQUAL_I32(result, 0);
 
+    // Check last commit is immutable and system block
     size_t idx = chain.count - 1;
     ASSUME_ITS_TRUE(chain.commits[idx].attributes.immutable);
     ASSUME_ITS_EQUAL_CSTR(chain.commits[idx].io.input, "[system]");
@@ -98,9 +107,11 @@ FOSSIL_TEST_CASE(c_test_iochat_learn_response_and_turn_count) {
     fossil_ai_jellyfish_chain_t chain;
     fossil_ai_jellyfish_init(&chain);
 
+    // Learn two responses
     fossil_ai_iochat_learn_response(&chain, "foo", "bar");
     fossil_ai_iochat_learn_response(&chain, "baz", "qux");
 
+    // Check turn count
     int turns = fossil_ai_iochat_turn_count(&chain);
     ASSUME_ITS_EQUAL_I32(turns, 2);
 }
@@ -129,6 +140,7 @@ FOSSIL_TEST_CASE(c_test_iochat_filter_recent_turns) {
     fossil_ai_iochat_learn_response(&chain, "b", "2");
     fossil_ai_iochat_learn_response(&chain, "c", "3");
 
+    // Filter last 2 turns
     int result = fossil_ai_iochat_filter_recent(&chain, &filtered, 2);
     ASSUME_ITS_EQUAL_I32(result, 0);
     ASSUME_ITS_EQUAL_I32(filtered.count, 2);

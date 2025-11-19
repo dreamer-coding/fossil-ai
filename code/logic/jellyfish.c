@@ -717,35 +717,30 @@ uint32_t crc32(const uint8_t *data, size_t length) {
 void fossil_ai_jellyfish_init(fossil_ai_jellyfish_chain_t *chain) {
     if (!chain) return;
 
-    /* Zero top-level (safe because all pointers inside FSON values are individually reset next) */
     memset(chain, 0, sizeof(*chain));
 
-    /* Repo timestamps */
     uint64_t now = get_time_microseconds();
     chain->created_at = now;
     chain->updated_at = now;
 
-    /* Default branch name */
-    strcpy(chain->default_branch, "main");
+    strncpy(chain->default_branch, "main", sizeof(chain->default_branch) - 1);
+    chain->default_branch[sizeof(chain->default_branch) - 1] = '\0';
 
-    /* Initialize repo_meta as OBJECT root */
     fossil_ai_jellyfish_fson_init(&chain->repo_meta);
     fossil_ai_jellyfish_fson_make_object(&chain->repo_meta);
 
-    /* Create initial branch[0] */
     chain->branch_count = 1;
-    strcpy(chain->branches[0].name, "main");
+    strncpy(chain->branches[0].name, "main", sizeof(chain->branches[0].name) - 1);
+    chain->branches[0].name[sizeof(chain->branches[0].name) - 1] = '\0';
     fossil_ai_jellyfish_fson_init(&chain->branches[0].branch_meta);
     fossil_ai_jellyfish_fson_make_object(&chain->branches[0].branch_meta);
 
-    /* Derive a pseudo device/repo id (mix salt + time) */
     uint64_t salt = get_device_salt();
     for (size_t i = 0; i < FOSSIL_DEVICE_ID_SIZE; ++i) {
         uint64_t v = (salt >> ((i % 8) * 8)) ^ (now >> (((i + 3) % 8) * 8));
         chain->repo_id[i] = (uint8_t)(v & 0xFF);
     }
 
-    /* Initialize all commit slots */
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
         fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         memset(b, 0, sizeof(*b));
@@ -758,18 +753,48 @@ void fossil_ai_jellyfish_init(fossil_ai_jellyfish_chain_t *chain) {
         fossil_ai_jellyfish_fson_init(&b->fson.root);
         fossil_ai_jellyfish_fson_init(&b->audit_meta);
 
-        /* Attributes neutral */
+        b->attributes.immutable = 0;
         b->attributes.valid = 0;
         b->attributes.confidence = 0.0f;
+        b->attributes.pruned = 0;
+        b->attributes.redacted = 0;
+        b->attributes.deduplicated = 0;
+        b->attributes.compressed = 0;
+        b->attributes.expired = 0;
+        b->attributes.trusted = 0;
+        b->attributes.conflicted = 0;
+        b->attributes.reserved = 0;
 
-        /* Set cross/forward ref counts */
+        b->classify.derived_from_index = 0;
         b->classify.cross_ref_count = 0;
         b->classify.forward_ref_count = 0;
+        b->classify.reasoning_depth = 0;
+        b->classify.reserved = 0;
+        b->classify.classification_reason[0] = '\0';
+        for (size_t t = 0; t < FOSSIL_JELLYFISH_MAX_TAGS; ++t)
+            b->classify.tags[t][0] = '\0';
+        b->classify.similarity_score = 0.0f;
+        b->classify.is_hallucinated = 0;
+        b->classify.is_contradicted = 0;
 
-        /* Time stamps */
+        b->io.input[0] = '\0';
+        b->io.output[0] = '\0';
+        b->io.input_len = 0;
+        b->io.output_len = 0;
+        b->io.input_token_count = 0;
+        b->io.output_token_count = 0;
+        b->io.compressed = 0;
+        b->io.redacted = 0;
+        b->io.reserved = 0;
+
         b->time.timestamp = 0;
+        b->time.delta_ms = 0;
+        b->time.duration_ms = 0;
         b->time.updated_at = 0;
         b->time.expires_at = 0;
+        b->time.validated_at = 0;
+
+        b->fson.attachment_count = 0;
     }
 
     chain->count = 0;
@@ -783,11 +808,11 @@ void fossil_ai_jellyfish_learn(fossil_ai_jellyfish_chain_t *chain, const char *i
 
     size_t index = SIZE_MAX;
 
-    /* Prefer append if room */
+    // Prefer append if room
     if (chain->count < FOSSIL_JELLYFISH_MAX_MEM) {
         index = chain->count;
     } else {
-        /* Reuse first invalid slot (lazy GC) */
+        // Reuse first invalid slot (lazy GC)
         for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
             if (!chain->commits[i].attributes.valid) {
                 index = i;
@@ -795,32 +820,30 @@ void fossil_ai_jellyfish_learn(fossil_ai_jellyfish_chain_t *chain, const char *i
             }
         }
     }
-    if (index == SIZE_MAX) return; /* No capacity */
+    if (index == SIZE_MAX) return; // No capacity
 
     fossil_ai_jellyfish_block_t *b = &chain->commits[index];
     memset(b, 0, sizeof(*b));
 
-    /* Core IO */
+    // Input/Output core payload
     strncpy(b->io.input, input, FOSSIL_JELLYFISH_INPUT_SIZE - 1);
     b->io.input[FOSSIL_JELLYFISH_INPUT_SIZE - 1] = '\0';
     strncpy(b->io.output, output, FOSSIL_JELLYFISH_OUTPUT_SIZE - 1);
     b->io.output[FOSSIL_JELLYFISH_OUTPUT_SIZE - 1] = '\0';
 
-    b->io.input_len  = strlen(b->io.input);
-    b->io.output_len = strlen(b->io.output);
+    b->io.input_len  = strnlen(b->io.input, FOSSIL_JELLYFISH_INPUT_SIZE);
+    b->io.output_len = strnlen(b->io.output, FOSSIL_JELLYFISH_OUTPUT_SIZE);
 
-    /* Tokenize */
-    b->io.input_token_count  = fossil_ai_jellyfish_tokenize(b->io.input,
-                                b->io.input_tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
-    b->io.output_token_count = fossil_ai_jellyfish_tokenize(b->io.output,
-                                b->io.output_tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+    b->io.input_token_count  = fossil_ai_jellyfish_tokenize(
+        b->io.input, b->io.input_tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+    b->io.output_token_count = fossil_ai_jellyfish_tokenize(
+        b->io.output, b->io.output_tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
-    /* Hash (content address) */
+    // Hash (content address)
     fossil_ai_jellyfish_hash(b->io.input, b->io.output, b->identity.commit_hash);
-    /* For now mirror commit hash as tree hash */
     memcpy(b->identity.tree_hash, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
 
-    /* Index / ancestry */
+    // Identity & ancestry
     b->identity.commit_index = (uint32_t)index;
     b->identity.parent_count = 0;
     b->identity.branch_id = 0;
@@ -829,43 +852,76 @@ void fossil_ai_jellyfish_learn(fossil_ai_jellyfish_chain_t *chain, const char *i
     b->identity.signature_len = 0;
     b->block_type = JELLY_COMMIT_INFER;
 
-    /* Author/committer: reuse repo id */
     memcpy(b->identity.author_id,   chain->repo_id, FOSSIL_DEVICE_ID_SIZE);
     memcpy(b->identity.committer_id, chain->repo_id, FOSSIL_DEVICE_ID_SIZE);
 
     b->identity.commit_message[0] = '\0';
+    b->identity.revision = 0;
+    memset(b->identity.origin_chain_id, 0, FOSSIL_DEVICE_ID_SIZE);
+    b->identity.fork_reason[0] = '\0';
+    b->identity.branch_reason[0] = '\0';
 
-    /* Classification / meta init */
+    // Classification / semantic relationships
+    b->classify.derived_from_index = 0;
+    memset(b->classify.cross_refs, 0, sizeof(b->classify.cross_refs));
+    b->classify.cross_ref_count = 0;
+    memset(b->classify.forward_refs, 0, sizeof(b->classify.forward_refs));
+    b->classify.forward_ref_count = 0;
+    b->classify.reasoning_depth = 0;
+    b->classify.reserved = 0;
+    b->classify.classification_reason[0] = '\0';
+    memset(b->classify.tags, 0, sizeof(b->classify.tags));
+    b->classify.similarity_score = 0.0f;
+    b->classify.is_hallucinated = 0;
+    b->classify.is_contradicted = 0;
     fossil_ai_jellyfish_fson_init(&b->classify.semantic_meta);
     fossil_ai_jellyfish_fson_make_object(&b->classify.semantic_meta);
+
+    // IO meta and pattern extensions
     fossil_ai_jellyfish_fson_init(&b->io.io_meta);
     fossil_ai_jellyfish_fson_make_object(&b->io.io_meta);
+    b->io.compressed = 0;
+    b->io.redacted = 0;
+    b->io.reserved = 0;
+
+    // FSON root and attachments
     fossil_ai_jellyfish_fson_init(&b->fson.root);
     fossil_ai_jellyfish_fson_make_object(&b->fson.root);
+    for (size_t i = 0; i < FOSSIL_JELLYFISH_FSON_MAX_ARRAY; ++i) {
+        b->fson.attachments[i].attachment = NULL;
+    }
+    b->fson.attachment_count = 0;
+
+    // Audit meta
     fossil_ai_jellyfish_fson_init(&b->audit_meta);
     fossil_ai_jellyfish_fson_make_object(&b->audit_meta);
 
-    /* Attributes */
+    // Attributes
+    memset(&b->attributes, 0, sizeof(b->attributes));
     b->attributes.valid = 1;
     b->attributes.immutable = 0;
-    b->attributes.confidence = 0.75f; /* heuristic base */
-    b->attributes.usage_count = 0;
+    b->attributes.confidence = 0.75f; // heuristic base
+    b->attributes.pruned = 0;
+    b->attributes.redacted = 0;
+    b->attributes.deduplicated = 0;
+    b->attributes.compressed = 0;
+    b->attributes.expired = 0;
+    b->attributes.trusted = 0;
+    b->attributes.conflicted = 0;
+    b->attributes.reserved = 0;
 
-    /* Timing */
+    // Timing
     uint64_t now = get_time_microseconds();
+    memset(&b->time, 0, sizeof(b->time));
     b->time.timestamp = now;
     b->time.updated_at = now;
-    b->time.delta_ms = 0;
-    b->time.duration_ms = 0;
-    b->time.expires_at = 0;
-    b->time.validated_at = 0;
 
-    /* Chain bookkeeping */
+    // Chain bookkeeping
     if (index == chain->count && chain->count < FOSSIL_JELLYFISH_MAX_MEM)
         chain->count++;
     chain->updated_at = now;
 
-    /* Update active (default) branch head */
+    // Update active (default) branch head
     if (chain->branch_count > 0) {
         memcpy(chain->branches[0].head_hash, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
     }
@@ -879,6 +935,7 @@ void fossil_ai_jellyfish_remove(fossil_ai_jellyfish_chain_t *chain, size_t index
     block->attributes.valid = 0;
     block->attributes.pruned = 1;
     block->attributes.confidence = 0.0f;
+    block->block_type = JELLY_COMMIT_PRUNE;
     block->time.expires_at = get_time_microseconds();
 }
 
@@ -886,8 +943,12 @@ fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_find(fossil_ai_jellyfish_chain_
     if (!chain || !hash) return NULL;
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
         fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-        if (b->attributes.valid &&
-            memcmp(b->identity.commit_hash, hash, FOSSIL_JELLYFISH_HASH_SIZE) == 0) {
+        if (!b->attributes.valid)
+            continue;
+        // Check type range for new enum (defensive, but not strictly required)
+        if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+            continue;
+        if (memcmp(b->identity.commit_hash, hash, FOSSIL_JELLYFISH_HASH_SIZE) == 0) {
             return b;
         }
     }
@@ -903,7 +964,7 @@ void fossil_ai_jellyfish_update(fossil_ai_jellyfish_chain_t *chain, size_t index
     uint8_t old_hash[FOSSIL_JELLYFISH_HASH_SIZE];
     memcpy(old_hash, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
 
-    /* Update IO (allow partial update if one is NULL) */
+    // Update IO (allow partial update if one is NULL)
     if (input) {
         strncpy(b->io.input, input, FOSSIL_JELLYFISH_INPUT_SIZE - 1);
         b->io.input[FOSSIL_JELLYFISH_INPUT_SIZE - 1] = '\0';
@@ -913,8 +974,8 @@ void fossil_ai_jellyfish_update(fossil_ai_jellyfish_chain_t *chain, size_t index
         b->io.output[FOSSIL_JELLYFISH_OUTPUT_SIZE - 1] = '\0';
     }
 
-    b->io.input_len  = strlen(b->io.input);
-    b->io.output_len = strlen(b->io.output);
+    b->io.input_len  = strnlen(b->io.input, FOSSIL_JELLYFISH_INPUT_SIZE);
+    b->io.output_len = strnlen(b->io.output, FOSSIL_JELLYFISH_OUTPUT_SIZE);
 
     b->io.input_token_count  = fossil_ai_jellyfish_tokenize(
         b->io.input, b->io.input_tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
@@ -924,8 +985,12 @@ void fossil_ai_jellyfish_update(fossil_ai_jellyfish_chain_t *chain, size_t index
     fossil_ai_jellyfish_hash(b->io.input, b->io.output, b->identity.commit_hash);
     memcpy(b->identity.tree_hash, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
 
-    /* If original was an INFER, upgrading to PATCH makes sense */
+    // Upgrade INFER to PATCH if appropriate (type system aware)
     if (b->block_type == JELLY_COMMIT_INFER)
+        b->block_type = JELLY_COMMIT_PATCH;
+
+    // Defensive: ensure block_type is valid enum
+    if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
         b->block_type = JELLY_COMMIT_PATCH;
 
     uint64_t now = get_time_microseconds();
@@ -933,12 +998,12 @@ void fossil_ai_jellyfish_update(fossil_ai_jellyfish_chain_t *chain, size_t index
     b->time.delta_ms = (uint32_t)((now - prev_upd) / 1000ULL);
     b->time.updated_at = now;
 
-    /* Light confidence adjustment (decay + small bump) */
+    // Light confidence adjustment (decay + small bump)
     b->attributes.confidence = (b->attributes.confidence * 0.90f) + 0.05f;
     if (b->attributes.confidence > 1.0f) b->attributes.confidence = 1.0f;
     if (b->attributes.confidence < 0.0f) b->attributes.confidence = 0.0f;
 
-    /* Update branch heads that pointed to old hash */
+    // Update branch heads that pointed to old hash
     for (size_t i = 0; i < chain->branch_count; ++i) {
         if (memcmp(chain->branches[i].head_hash, old_hash, FOSSIL_JELLYFISH_HASH_SIZE) == 0) {
             memcpy(chain->branches[i].head_hash, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
@@ -956,13 +1021,13 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
     FILE *fp = fopen(filepath, "wb");
     if (!fp) return -1;
 
-    /* ---------- Header ---------- */
+    // ---------- Header ----------
     struct header {
         char     magic[8];
         uint32_t version;
         uint32_t commit_capacity;
-        uint32_t commit_count;      /* chain->count (occupied slots, may include invalid) */
-        uint32_t valid_count;       /* number of valid blocks serialized */
+        uint32_t commit_count;      // chain->count (occupied slots, may include invalid)
+        uint32_t valid_count;       // number of valid blocks serialized
         uint32_t branch_count;
         uint64_t created_at;
         uint64_t updated_at;
@@ -981,7 +1046,7 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
     memcpy(hdr.repo_id, chain->repo_id, FOSSIL_DEVICE_ID_SIZE);
     strncpy(hdr.default_branch, chain->default_branch, sizeof(hdr.default_branch) - 1);
 
-    /* Count valid blocks */
+    // Count valid blocks
     uint32_t valid_count = 0;
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i)
         if (chain->commits[i].attributes.valid) valid_count++;
@@ -992,7 +1057,7 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
         return -1;
     }
 
-    /* ---------- Branch records ---------- */
+    // ---------- Branch records ----------
     struct branch_rec {
         char name[64];
         uint8_t head_hash[FOSSIL_JELLYFISH_HASH_SIZE];
@@ -1008,7 +1073,7 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
         }
     }
 
-    /* ---------- Commit records ---------- */
+    // ---------- Commit records ----------
     struct commit_rec {
         uint32_t index;
         uint8_t  block_type;
@@ -1028,7 +1093,7 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
 
         char     commit_message[256];
 
-        /* IO */
+        // IO
         char     input[FOSSIL_JELLYFISH_INPUT_SIZE];
         char     output[FOSSIL_JELLYFISH_OUTPUT_SIZE];
         uint32_t input_len;
@@ -1039,7 +1104,7 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
         char     input_tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
         char     output_tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
 
-        /* Timing */
+        // Timing
         uint64_t timestamp;
         uint32_t delta_ms;
         uint32_t duration_ms;
@@ -1047,12 +1112,11 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
         uint64_t expires_at;
         uint64_t validated_at;
 
-        /* Attributes */
+        // Attributes
         float    confidence;
         uint32_t usage_count;
-        uint8_t  attr_flags; /* bitfield of attribute booleans */
-        uint8_t  reserved[7]; /* padding for future */
-
+        uint8_t  attr_flags; // bitfield of attribute booleans
+        uint8_t  reserved[7]; // padding for future
     } rec;
 
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
@@ -1060,7 +1124,7 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
         if (!b->attributes.valid) continue;
 
         memset(&rec, 0, sizeof(rec));
-        rec.index            = b->identity.commit_index;
+        rec.index            = (uint32_t)b->identity.commit_index;
         rec.block_type       = (uint8_t)b->block_type;
         rec.parent_count     = (uint8_t)b->identity.parent_count;
         rec.is_merge_commit  = (uint8_t)b->identity.is_merge_commit;
@@ -1101,9 +1165,8 @@ int fossil_ai_jellyfish_save(const fossil_ai_jellyfish_chain_t *chain, const cha
         rec.validated_at = b->time.validated_at;
 
         rec.confidence   = b->attributes.confidence;
-        rec.usage_count  = b->attributes.usage_count;
 
-        /* Pack attribute booleans into bitfield */
+        // Pack attribute booleans into bitfield
         rec.attr_flags =
             (b->attributes.immutable   ? 1u << 0 : 0) |
             (b->attributes.valid       ? 1u << 1 : 0) |
@@ -1148,7 +1211,6 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
     if (hdr.commit_capacity != FOSSIL_JELLYFISH_MAX_MEM) { fclose(fp); return -1; }
     if (hdr.branch_count > FOSSIL_JELLYFISH_MAX_BRANCHES) { fclose(fp); return -1; }
 
-    /* Wipe and rebuild */
     memset(chain, 0, sizeof(*chain));
     chain->created_at   = hdr.created_at;
     chain->updated_at   = hdr.updated_at;
@@ -1156,7 +1218,6 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
     memcpy(chain->repo_id, hdr.repo_id, FOSSIL_DEVICE_ID_SIZE);
     strncpy(chain->default_branch, hdr.default_branch, sizeof(chain->default_branch)-1);
 
-    /* Initialize repo_meta root */
     fossil_ai_jellyfish_fson_init(&chain->repo_meta);
     fossil_ai_jellyfish_fson_make_object(&chain->repo_meta);
 
@@ -1210,7 +1271,6 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
         uint64_t validated_at;
 
         float    confidence;
-        uint32_t usage_count;
         uint8_t  attr_flags;
         uint8_t  reserved[7];
     } rec;
@@ -1225,7 +1285,7 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
         fossil_ai_jellyfish_block_t *b = &chain->commits[rec.index];
         memset(b, 0, sizeof(*b));
 
-        /* Identity */
+        // Identity
         b->identity.commit_index    = rec.index;
         b->block_type               = (fossil_ai_jellyfish_commit_type_t)rec.block_type;
         b->identity.parent_count    = rec.parent_count > 4 ? 4 : rec.parent_count;
@@ -1248,7 +1308,10 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
         strncpy(b->identity.commit_message, rec.commit_message,
                 sizeof(b->identity.commit_message)-1);
 
-        /* IO */
+        b->identity.branch_id = 0;
+        b->identity.reserved = 0;
+
+        // IO
         strncpy(b->io.input,  rec.input,  sizeof(b->io.input)-1);
         strncpy(b->io.output, rec.output, sizeof(b->io.output)-1);
         b->io.input_len          = rec.input_len;
@@ -1262,7 +1325,13 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
         for (size_t t=0; t<b->io.output_token_count; ++t)
             strncpy(b->io.output_tokens[t], rec.output_tokens[t], FOSSIL_JELLYFISH_TOKEN_SIZE-1);
 
-        /* Timing */
+        b->io.compressed = 0;
+        b->io.redacted = 0;
+        b->io.reserved = 0;
+        fossil_ai_jellyfish_fson_init(&b->io.io_meta);
+        fossil_ai_jellyfish_fson_make_object(&b->io.io_meta);
+
+        // Timing
         b->time.timestamp    = rec.timestamp;
         b->time.delta_ms     = rec.delta_ms;
         b->time.duration_ms  = rec.duration_ms;
@@ -1270,9 +1339,8 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
         b->time.expires_at   = rec.expires_at;
         b->time.validated_at = rec.validated_at;
 
-        /* Attributes */
+        // Attributes
         b->attributes.confidence  = rec.confidence;
-        b->attributes.usage_count = rec.usage_count;
         b->attributes.immutable    = (rec.attr_flags & (1u<<0)) ? 1:0;
         b->attributes.valid        = (rec.attr_flags & (1u<<1)) ? 1:0;
         b->attributes.pruned       = (rec.attr_flags & (1u<<2)) ? 1:0;
@@ -1281,14 +1349,34 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
         b->attributes.compressed   = (rec.attr_flags & (1u<<5)) ? 1:0;
         b->attributes.expired      = (rec.attr_flags & (1u<<6)) ? 1:0;
         b->attributes.trusted      = (rec.attr_flags & (1u<<7)) ? 1:0;
+        b->attributes.conflicted   = 0;
+        b->attributes.reserved     = 0;
 
-        /* Initialize FSON sub-objects (not serialized) */
+        // Classification
+        b->classify.derived_from_index = 0;
+        memset(b->classify.cross_refs, 0, sizeof(b->classify.cross_refs));
+        b->classify.cross_ref_count = 0;
+        memset(b->classify.forward_refs, 0, sizeof(b->classify.forward_refs));
+        b->classify.forward_ref_count = 0;
+        b->classify.reasoning_depth = 0;
+        b->classify.reserved = 0;
+        b->classify.classification_reason[0] = '\0';
+        memset(b->classify.tags, 0, sizeof(b->classify.tags));
+        b->classify.similarity_score = 0.0f;
+        b->classify.is_hallucinated = 0;
+        b->classify.is_contradicted = 0;
         fossil_ai_jellyfish_fson_init(&b->classify.semantic_meta);
         fossil_ai_jellyfish_fson_make_object(&b->classify.semantic_meta);
-        fossil_ai_jellyfish_fson_init(&b->io.io_meta);
-        fossil_ai_jellyfish_fson_make_object(&b->io.io_meta);
+
+        // FSON attachments
         fossil_ai_jellyfish_fson_init(&b->fson.root);
         fossil_ai_jellyfish_fson_make_object(&b->fson.root);
+        for (size_t i = 0; i < FOSSIL_JELLYFISH_FSON_MAX_ARRAY; ++i) {
+            b->fson.attachments[i].attachment = NULL;
+        }
+        b->fson.attachment_count = 0;
+
+        // Audit meta
         fossil_ai_jellyfish_fson_init(&b->audit_meta);
         fossil_ai_jellyfish_fson_make_object(&b->audit_meta);
 
@@ -1300,7 +1388,6 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
 
     fclose(fp);
 
-    /* chain->count should reflect highest occupied index (like original) */
     chain->count = hdr.commit_count;
     if (chain->count < max_index_plus1)
         chain->count = max_index_plus1;
@@ -1319,32 +1406,33 @@ void fossil_ai_jellyfish_cleanup(fossil_ai_jellyfish_chain_t *chain) {
     size_t highest_valid = 0;
     int any_valid = 0;
 
-    /* Pass 1: per-block hygiene */
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
         fossil_ai_jellyfish_block_t *b = &chain->commits[i];
 
-        /* Skip never-used slots quickly (confidence already zeroed) */
+        // Skip never-used slots
         if (!b->attributes.valid && b->time.timestamp == 0)
             continue;
 
-        /* Expiration handling */
+        // Expiration
         if (b->attributes.valid &&
             b->time.expires_at != 0 &&
             now >= b->time.expires_at) {
             b->attributes.expired = 1;
             b->attributes.valid = 0;
             b->attributes.confidence = 0.0f;
+            b->block_type = JELLY_COMMIT_PRUNE;
         }
 
-        /* Invariant: confidence bounds */
+        // Clamp block_type to valid enum range
+        if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+            b->block_type = JELLY_COMMIT_UNKNOWN;
+
+        // Confidence bounds
         if (b->attributes.confidence < 0.0f) b->attributes.confidence = 0.0f;
         if (b->attributes.confidence > 1.0f) b->attributes.confidence = 1.0f;
+        if (!b->attributes.valid) b->attributes.confidence = 0.0f;
 
-        /* Invalidate confidence for non-valid blocks */
-        if (!b->attributes.valid)
-            b->attributes.confidence = 0.0f;
-
-        /* Clamp counts */
+        // Clamp counts (type-safe, using struct fields)
         if (b->identity.parent_count > 4)
             b->identity.parent_count = 4;
         if (b->classify.cross_ref_count > FOSSIL_JELLYFISH_MAX_LINKS)
@@ -1355,8 +1443,10 @@ void fossil_ai_jellyfish_cleanup(fossil_ai_jellyfish_chain_t *chain) {
             b->io.input_token_count = FOSSIL_JELLYFISH_MAX_TOKENS;
         if (b->io.output_token_count > FOSSIL_JELLYFISH_MAX_TOKENS)
             b->io.output_token_count = FOSSIL_JELLYFISH_MAX_TOKENS;
+        if (b->fson.attachment_count > FOSSIL_JELLYFISH_FSON_MAX_ARRAY)
+            b->fson.attachment_count = FOSSIL_JELLYFISH_FSON_MAX_ARRAY;
 
-        /* Length guards (defensive) */
+        // Length guards
         if (b->io.input_len >= FOSSIL_JELLYFISH_INPUT_SIZE)
             b->io.input[FOSSIL_JELLYFISH_INPUT_SIZE - 1] = '\0';
         if (b->io.output_len >= FOSSIL_JELLYFISH_OUTPUT_SIZE)
@@ -1364,17 +1454,19 @@ void fossil_ai_jellyfish_cleanup(fossil_ai_jellyfish_chain_t *chain) {
         b->io.input_len = strnlen(b->io.input, FOSSIL_JELLYFISH_INPUT_SIZE);
         b->io.output_len = strnlen(b->io.output, FOSSIL_JELLYFISH_OUTPUT_SIZE);
 
-        /* Merge flag consistency */
+        // Merge flag consistency
         if (b->identity.parent_count >= 2)
             b->identity.is_merge_commit = 1;
         else if (b->identity.is_merge_commit && b->identity.parent_count < 2)
             b->identity.is_merge_commit = 0;
 
-        /* Detached heuristic: if block_type denotes detached or parent_count==0 (non-genesis) */
+        // Detached heuristic
         if (b->block_type == JELLY_COMMIT_DETACHED)
             b->identity.detached = 1;
+        else
+            b->identity.detached = 0;
 
-        /* Track highest valid index */
+        // Track highest valid index
         if (b->attributes.valid) {
             any_valid = 1;
             if (i + 1 > highest_valid)
@@ -1382,13 +1474,10 @@ void fossil_ai_jellyfish_cleanup(fossil_ai_jellyfish_chain_t *chain) {
         }
     }
 
-    /* Logical chain->count shrink (do not reorder) */
-    if (any_valid)
-        chain->count = highest_valid;
-    else
-        chain->count = 0;
+    // Logical shrink
+    chain->count = any_valid ? highest_valid : 0;
 
-    /* Pass 2: sanitize branch heads (ensure they point to an existing valid commit) */
+    // Sanitize branch heads
     for (size_t br = 0; br < chain->branch_count; ++br) {
         int found = 0;
         for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM && !found; ++i) {
@@ -1412,7 +1501,7 @@ int fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_chain_t *chain) {
     if (!chain) return -1;
     int anomalies = 0;
 
-    /* Collect valid hashes + indices for duplicate / parent checks */
+    // Collect valid hashes + indices for duplicate / parent checks
     uint8_t valid_hashes[FOSSIL_JELLYFISH_MAX_MEM][FOSSIL_JELLYFISH_HASH_SIZE];
     size_t  valid_indices[FOSSIL_JELLYFISH_MAX_MEM];
     size_t  valid_count = 0;
@@ -1425,21 +1514,21 @@ int fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_chain_t *chain) {
         }
     }
 
-    /* Detect duplicate commit hashes (content-address collision or duplicate IO when hash deterministic) */
+    // Detect duplicate commit hashes (content-address collision or duplicate IO when hash deterministic)
     for (size_t i = 0; i < valid_count; ++i) {
         for (size_t j = 0; j < i; ++j) {
             if (memcmp(valid_hashes[i], valid_hashes[j], FOSSIL_JELLYFISH_HASH_SIZE) == 0) {
-                anomalies++; /* count each additional duplicate once */
+                anomalies++;
                 break;
             }
         }
     }
 
-    /* Detect duplicate (input,output) pairs even if hashes differ (e.g., non-deterministic hash) */
+    // Detect duplicate (input,output) pairs even if hashes differ
     for (size_t i = 0; i < valid_count; ++i) {
-        const fossil_ai_jellyfish_block_t *bi = &chain->commits[ valid_indices[i] ];
+        const fossil_ai_jellyfish_block_t *bi = &chain->commits[valid_indices[i]];
         for (size_t j = 0; j < i; ++j) {
-            const fossil_ai_jellyfish_block_t *bj = &chain->commits[ valid_indices[j] ];
+            const fossil_ai_jellyfish_block_t *bj = &chain->commits[valid_indices[j]];
             if (strcmp(bi->io.input, bj->io.input) == 0 &&
                 strcmp(bi->io.output, bj->io.output) == 0) {
                 anomalies++;
@@ -1452,20 +1541,24 @@ int fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_chain_t *chain) {
         const fossil_ai_jellyfish_block_t *b = &chain->commits[idx];
         if (!b->attributes.valid) continue;
 
+        // Index consistency
         if (b->identity.commit_index != idx)
             anomalies++;
 
+        // Hash integrity
         uint8_t recomputed[FOSSIL_JELLYFISH_HASH_SIZE];
         fossil_ai_jellyfish_hash(b->io.input, b->io.output, recomputed);
         if (memcmp(recomputed, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE) != 0)
             anomalies++;
 
+        // Zero hash check
         int all_zero = 1;
         for (size_t k = 0; k < FOSSIL_JELLYFISH_HASH_SIZE; ++k)
             if (b->identity.commit_hash[k] != 0) { all_zero = 0; break; }
         if (all_zero)
             anomalies++;
 
+        // Parent count bounds
         if (b->identity.parent_count > 4)
             anomalies++;
         for (size_t p = 0; p < b->identity.parent_count && p < 4; ++p) {
@@ -1480,10 +1573,12 @@ int fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_chain_t *chain) {
                 anomalies++;
         }
 
+        // Merge flag consistency
         if ((b->identity.parent_count >= 2 && !b->identity.is_merge_commit) ||
             (b->identity.parent_count < 2 && b->identity.is_merge_commit))
             anomalies++;
 
+        // Length integrity
         size_t real_in_len  = strnlen(b->io.input,  FOSSIL_JELLYFISH_INPUT_SIZE);
         size_t real_out_len = strnlen(b->io.output, FOSSIL_JELLYFISH_OUTPUT_SIZE);
         if (real_in_len  != b->io.input_len)  anomalies++;
@@ -1491,16 +1586,24 @@ int fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_chain_t *chain) {
         if (b->io.input_token_count  > FOSSIL_JELLYFISH_MAX_TOKENS) anomalies++;
         if (b->io.output_token_count > FOSSIL_JELLYFISH_MAX_TOKENS) anomalies++;
 
+        // Confidence bounds
         if (b->attributes.confidence < 0.0f || b->attributes.confidence > 1.0f)
             anomalies++;
 
+        // Signed commit must have signature
         if (b->block_type == JELLY_COMMIT_SIGNED && b->identity.signature_len == 0)
             anomalies++;
 
+        // Merge type must have at least 2 parents
         if (b->block_type == JELLY_COMMIT_MERGE && b->identity.parent_count < 2)
+            anomalies++;
+
+        // Type system: check valid enum range
+        if ((int)b->block_type < (int)JELLY_COMMIT_UNKNOWN || (int)b->block_type > (int)JELLY_COMMIT_FINAL)
             anomalies++;
     }
 
+    // Branch head validity
     for (size_t br = 0; br < chain->branch_count; ++br) {
         const uint8_t *head = chain->branches[br].head_hash;
         int all_zero = 1;
@@ -1515,6 +1618,7 @@ int fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_chain_t *chain) {
             anomalies++;
     }
 
+    // Highest valid index consistency
     size_t highest_valid = 0;
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i)
         if (chain->commits[i].attributes.valid && i + 1 > highest_valid)
@@ -1542,6 +1646,7 @@ int fossil_ai_jellyfish_prune(fossil_ai_jellyfish_chain_t *chain, float min_conf
 
         if (expired) b->attributes.expired = 1;
 
+        // Only prune blocks with recognized commit types (defensive for new enum values)
         if (expired || low_conf) {
             uint8_t old_hash[FOSSIL_JELLYFISH_HASH_SIZE];
             memcpy(old_hash, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
@@ -1552,7 +1657,7 @@ int fossil_ai_jellyfish_prune(fossil_ai_jellyfish_chain_t *chain, float min_conf
             b->block_type = JELLY_COMMIT_PRUNE;
             b->time.expires_at = now;
 
-            /* Clear branch heads pointing here (will also be sanitized in cleanup) */
+            // Clear branch heads pointing here (will also be sanitized in cleanup)
             for (size_t br = 0; br < chain->branch_count; ++br) {
                 if (memcmp(chain->branches[br].head_hash, old_hash, FOSSIL_JELLYFISH_HASH_SIZE) == 0) {
                     memset(chain->branches[br].head_hash, 0, FOSSIL_JELLYFISH_HASH_SIZE);
@@ -1563,7 +1668,7 @@ int fossil_ai_jellyfish_prune(fossil_ai_jellyfish_chain_t *chain, float min_conf
     }
 
     if (pruned) {
-        fossil_ai_jellyfish_cleanup(chain); /* updates count & branch heads, sets updated_at */
+        fossil_ai_jellyfish_cleanup(chain); // updates count & branch heads, sets updated_at
     }
 
     return pruned;
@@ -1575,7 +1680,7 @@ const char *fossil_ai_jellyfish_reason(fossil_ai_jellyfish_chain_t *chain, const
     static const char *UNKNOWN = "Unknown";
     if (!chain || !input || !*input) return UNKNOWN;
 
-    /* Tokenize query */
+    // Tokenize query (lowercase alphanumeric, bounded)
     char qtokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
     size_t qcount = fossil_ai_jellyfish_tokenize(input, qtokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
@@ -1583,22 +1688,24 @@ const char *fossil_ai_jellyfish_reason(fossil_ai_jellyfish_chain_t *chain, const
     float best_score = -1.0f;
 
     uint64_t now = get_time_microseconds();
-
     size_t upper = chain->count;
     if (upper > FOSSIL_JELLYFISH_MAX_MEM) upper = FOSSIL_JELLYFISH_MAX_MEM;
 
     for (size_t i = 0; i < upper; ++i) {
         fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid) continue;
+        // Defensive: only consider blocks with recognized commit types
+        if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+            continue;
 
-        /* Fast exact match */
+        // Fast exact match
         if (strcmp(b->io.input, input) == 0) {
             best = b;
-            best_score = 1e9f; /* Sentinel high score */
+            best_score = 1e9f; // Sentinel high score
             break;
         }
 
-        /* Token overlap (Jaccard) */
+        // Token overlap (Jaccard)
         if (qcount == 0 || b->io.input_token_count == 0) continue;
 
         size_t match = 0;
@@ -1615,13 +1722,36 @@ const char *fossil_ai_jellyfish_reason(fossil_ai_jellyfish_chain_t *chain, const
         size_t denom = qcount + b->io.input_token_count - match;
         float jaccard = denom ? (float)match / (float)denom : 0.0f;
 
-        /* Freshness factor (recent blocks get slight boost) */
+        // Freshness factor (recent blocks get slight boost)
         float age_sec = (float)((now > b->time.timestamp) ? (now - b->time.timestamp) : 0ULL) / 1e6f;
-        float freshness = (age_sec < 60.0f) ? 1.0f : (60.0f / (age_sec + 60.0f)); /* ~decays after 1 min */
+        float freshness = (age_sec < 60.0f) ? 1.0f : (60.0f / (age_sec + 60.0f));
 
-        float weighted = jaccard * (0.5f + 0.5f * b->attributes.confidence) * (0.8f + 0.2f * freshness);
+        // Type weighting: trusted/validated/signed/release/archived get a bonus
+        float type_weight = 1.0f;
+        switch (b->block_type) {
+            case JELLY_COMMIT_VALIDATE:
+            case JELLY_COMMIT_SIGNED:
+            case JELLY_COMMIT_RELEASE:
+            case JELLY_COMMIT_ARCHIVE:
+                type_weight = 1.10f; break;
+            case JELLY_COMMIT_PATCH:
+            case JELLY_COMMIT_INFER:
+                type_weight = 1.00f; break;
+            case JELLY_COMMIT_EXPERIMENT:
+            case JELLY_COMMIT_STASH:
+            case JELLY_COMMIT_DRAFT:
+                type_weight = 0.85f; break;
+            case JELLY_COMMIT_PRUNE:
+            case JELLY_COMMIT_ABANDONED:
+            case JELLY_COMMIT_CONFLICT:
+                type_weight = 0.70f; break;
+            default:
+                break;
+        }
 
-        /* Tie-break: confidence then recency */
+        float weighted = jaccard * (0.5f + 0.5f * b->attributes.confidence) * (0.8f + 0.2f * freshness) * type_weight;
+
+        // Tie-break: confidence then recency
         if (weighted > best_score ||
             (weighted == best_score && best &&
              (b->attributes.confidence > best->attributes.confidence ||
@@ -1634,8 +1764,7 @@ const char *fossil_ai_jellyfish_reason(fossil_ai_jellyfish_chain_t *chain, const
 
     if (!best) return UNKNOWN;
 
-    /* Lightweight reinforcement */
-    best->attributes.usage_count++;
+    // Lightweight reinforcement
     if (best->attributes.confidence < 1.0f) {
         best->attributes.confidence += 0.01f;
         if (best->attributes.confidence > 1.0f)
@@ -1645,9 +1774,13 @@ const char *fossil_ai_jellyfish_reason(fossil_ai_jellyfish_chain_t *chain, const
     return best->io.output[0] ? best->io.output : UNKNOWN;
 }
 
-bool fossil_ai_jellyfish_reason_verbose(const fossil_ai_jellyfish_chain_t *chain, const char *input,
-                                     char *out_output, float *out_confidence,
-                                     const fossil_ai_jellyfish_block_t **out_block) {
+bool fossil_ai_jellyfish_reason_verbose(
+    const fossil_ai_jellyfish_chain_t *chain,
+    const char *input,
+    char *out_output,
+    float *out_confidence,
+    const fossil_ai_jellyfish_block_t **out_block)
+{
     static const char *UNKNOWN = "Unknown";
     if (!chain || !input || !*input) return false;
 
@@ -1655,7 +1788,7 @@ bool fossil_ai_jellyfish_reason_verbose(const fossil_ai_jellyfish_chain_t *chain
     if (out_confidence) *out_confidence = 0.0f;
     if (out_block) *out_block = NULL;
 
-    /* Tokenize query */
+    // Tokenize query (lowercase alphanumeric, bounded)
     char qtokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
     size_t qcount = fossil_ai_jellyfish_tokenize(input, qtokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
@@ -1670,8 +1803,11 @@ bool fossil_ai_jellyfish_reason_verbose(const fossil_ai_jellyfish_chain_t *chain
     for (size_t i = 0; i < upper; ++i) {
         const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid) continue;
+        // Defensive: only consider blocks with recognized commit types
+        if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+            continue;
 
-        /* Exact match fast path */
+        // Exact match fast path
         if (strcmp(b->io.input, input) == 0) {
             best = b;
             best_score = 1.0f;
@@ -1698,7 +1834,33 @@ bool fossil_ai_jellyfish_reason_verbose(const fossil_ai_jellyfish_chain_t *chain
         float age_sec = (float)((now > b->time.timestamp) ? (now - b->time.timestamp) : 0ULL) / 1e6f;
         float freshness = (age_sec < 60.0f) ? 1.0f : (60.0f / (age_sec + 60.0f));
 
-        float weighted = jaccard * (0.5f + 0.5f * b->attributes.confidence) * (0.8f + 0.2f * freshness);
+        // Type weighting: trusted/validated/signed/release/archived get a bonus
+        float type_weight = 1.0f;
+        switch (b->block_type) {
+            case JELLY_COMMIT_VALIDATE:
+            case JELLY_COMMIT_SIGNED:
+            case JELLY_COMMIT_RELEASE:
+            case JELLY_COMMIT_ARCHIVE:
+                type_weight = 1.10f; break;
+            case JELLY_COMMIT_PATCH:
+            case JELLY_COMMIT_INFER:
+                type_weight = 1.00f; break;
+            case JELLY_COMMIT_EXPERIMENT:
+            case JELLY_COMMIT_STASH:
+            case JELLY_COMMIT_DRAFT:
+                type_weight = 0.85f; break;
+            case JELLY_COMMIT_PRUNE:
+            case JELLY_COMMIT_ABANDONED:
+            case JELLY_COMMIT_CONFLICT:
+                type_weight = 0.70f; break;
+            default:
+                break;
+        }
+
+        float weighted = jaccard
+            * (0.5f + 0.5f * b->attributes.confidence)
+            * (0.8f + 0.2f * freshness)
+            * type_weight;
 
         if (weighted > best_score ||
             (weighted == best_score && best &&
@@ -1738,9 +1900,9 @@ const fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_best_match(
     const char *input)
 {
     if (!chain || !input || !*input)
-    return NULL;
+        return NULL;
 
-    /* Tokenize query (bounded) */
+    // Tokenize query (bounded)
     char qtokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
     size_t qcount = fossil_ai_jellyfish_tokenize(input, qtokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
@@ -1750,14 +1912,17 @@ const fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_best_match(
 
     size_t upper = chain->count;
     if (upper > FOSSIL_JELLYFISH_MAX_MEM)
-    upper = FOSSIL_JELLYFISH_MAX_MEM;
+        upper = FOSSIL_JELLYFISH_MAX_MEM;
 
     for (size_t i = 0; i < upper; ++i) {
         const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid)
             continue;
+        // Defensive: only consider blocks with recognized commit types
+        if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+            continue;
 
-        /* Collect exact input matches and pick highest confidence */
+        // Collect exact input matches and pick highest confidence
         if (strcmp(b->io.input, input) == 0) {
             float c = b->attributes.confidence;
             if (c < 0.0f) c = 0.0f;
@@ -1770,42 +1935,66 @@ const fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_best_match(
             continue;
         }
 
-    if (qcount == 0 || b->io.input_token_count == 0)
-        continue;
+        if (qcount == 0 || b->io.input_token_count == 0)
+            continue;
 
-    /* Intersection count */
-    size_t match = 0;
-    for (size_t q = 0; q < qcount; ++q) {
-        for (size_t t = 0; t < b->io.input_token_count; ++t) {
-        if (strncmp(qtokens[q], b->io.input_tokens[t], FOSSIL_JELLYFISH_TOKEN_SIZE) == 0) {
-            match++;
-            break;
+        // Intersection count
+        size_t match = 0;
+        for (size_t q = 0; q < qcount; ++q) {
+            for (size_t t = 0; t < b->io.input_token_count; ++t) {
+                if (strncmp(qtokens[q], b->io.input_tokens[t], FOSSIL_JELLYFISH_TOKEN_SIZE) == 0) {
+                    match++;
+                    break;
+                }
+            }
         }
+        if (match == 0)
+            continue;
+
+        size_t denom = qcount + b->io.input_token_count - match;
+        float jaccard = denom ? (float)match / (float)denom : 0.0f;
+
+        // Freshness (recent <=60s favored)
+        float age_sec = (float)((now > b->time.timestamp) ? (now - b->time.timestamp) : 0ULL) / 1e6f;
+        float freshness = (age_sec < 60.0f) ? 1.0f : (60.0f / (age_sec + 60.0f));
+
+        // Type weighting: trusted/validated/signed/release/archived get a bonus
+        float type_weight = 1.0f;
+        switch ((fossil_ai_jellyfish_commit_type_t)b->block_type) {
+            case JELLY_COMMIT_VALIDATE:
+            case JELLY_COMMIT_SIGNED:
+            case JELLY_COMMIT_RELEASE:
+            case JELLY_COMMIT_ARCHIVE:
+                type_weight = 1.10f; break;
+            case JELLY_COMMIT_PATCH:
+            case JELLY_COMMIT_INFER:
+                type_weight = 1.00f; break;
+            case JELLY_COMMIT_EXPERIMENT:
+            case JELLY_COMMIT_DRAFT:
+            case JELLY_COMMIT_STASH:
+                type_weight = 0.85f; break;
+            case JELLY_COMMIT_PRUNE:
+            case JELLY_COMMIT_ABANDONED:
+            case JELLY_COMMIT_CONFLICT:
+                type_weight = 0.70f; break;
+            default:
+                break;
         }
-    }
-    if (match == 0)
-        continue;
 
-    size_t denom = qcount + b->io.input_token_count - match;
-    float jaccard = denom ? (float)match / (float)denom : 0.0f;
+        // Weighted score
+        float weighted = jaccard
+            * (0.5f + 0.5f * b->attributes.confidence)
+            * (0.85f + 0.15f * freshness)
+            * type_weight;
 
-    /* Freshness (recent <=60s favored) */
-    float age_sec = (float)((now > b->time.timestamp) ? (now - b->time.timestamp) : 0ULL) / 1e6f;
-    float freshness = (age_sec < 60.0f) ? 1.0f : (60.0f / (age_sec + 60.0f));
-
-    /* Weighted score */
-    float weighted = jaccard
-               * (0.5f + 0.5f * b->attributes.confidence)
-               * (0.85f + 0.15f * freshness);
-
-    if (weighted > best_score ||
-        (weighted == best_score && best &&
-         (b->attributes.confidence > best->attributes.confidence ||
-          (b->attributes.confidence == best->attributes.confidence &&
-           b->time.timestamp > best->time.timestamp)))) {
-        best = b;
-        best_score = weighted;
-    }
+        if (weighted > best_score ||
+            (weighted == best_score && best &&
+             (b->attributes.confidence > best->attributes.confidence ||
+              (b->attributes.confidence == best->attributes.confidence &&
+               b->time.timestamp > best->time.timestamp)))) {
+            best = b;
+            best_score = weighted;
+        }
     }
 
     return best;
@@ -1834,19 +2023,19 @@ void fossil_ai_jellyfish_dump(const fossil_ai_jellyfish_chain_t *chain) {
     }
     printf("Commits (count=%zu, capacity=%d)\n", chain->count, FOSSIL_JELLYFISH_MAX_MEM);
 
-    /* Simple per-type counts */
-    unsigned type_counts[64] = {0};
+    // Per-type counts using updated enum range (0..54)
+    unsigned type_counts[JELLY_COMMIT_FINAL + 1] = {0};
     size_t valid = 0;
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
         const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid) continue;
         valid++;
-        if ((unsigned)b->block_type < 64)
+        if ((unsigned)b->block_type <= JELLY_COMMIT_FINAL)
             type_counts[b->block_type]++;
     }
     printf("Valid: %zu\n", valid);
 
-    /* Print first N detailed commits (avoid huge spam) */
+    // Print first N detailed commits (avoid huge spam)
     const size_t DETAIL_LIMIT = 32;
     size_t printed = 0;
     for (size_t i = 0; i < chain->count && i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
@@ -1860,10 +2049,12 @@ void fossil_ai_jellyfish_dump(const fossil_ai_jellyfish_chain_t *chain) {
         char hash8[17] = {0};
         for (int k = 0; k < 8 && k < FOSSIL_JELLYFISH_HASH_SIZE; ++k)
             sprintf(hash8 + k * 2, "%02X", b->identity.commit_hash[k]);
-        printf("#%04u %s type=%u conf=%.2f age=%llums I:\"%s\" -> O:\"%s\"\n",
+        const char *type_name = fossil_ai_jellyfish_commit_type_name(b->block_type);
+        printf("#%04u %s type=%u (%s) conf=%.2f age=%llums I:\"%s\" -> O:\"%s\"\n",
                b->identity.commit_index,
                hash8,
                (unsigned)b->block_type,
+               type_name ? type_name : "?",
                b->attributes.confidence,
                (unsigned long long)((get_time_microseconds() - b->time.timestamp)/1000ULL),
                b->io.input,
@@ -1871,11 +2062,12 @@ void fossil_ai_jellyfish_dump(const fossil_ai_jellyfish_chain_t *chain) {
         printed++;
     }
 
-    /* Type histogram (only non-zero) */
+    // Type histogram (only non-zero)
     printf("--- Type Histogram ---\n");
-    for (unsigned t = 0; t < 64; ++t) {
+    for (unsigned t = 0; t <= JELLY_COMMIT_FINAL; ++t) {
         if (type_counts[t]) {
-            printf(" type[%u]=%u\n", t, type_counts[t]);
+            const char *type_name = fossil_ai_jellyfish_commit_type_name((fossil_ai_jellyfish_commit_type_t)t);
+            printf(" type[%u]=%u (%s)\n", t, type_counts[t], type_name ? type_name : "?");
         }
     }
     printf("=== End Dump ===\n");
@@ -1895,10 +2087,10 @@ void fossil_ai_jellyfish_reflect(const fossil_ai_jellyfish_chain_t *chain) {
     uint64_t newest_ts = 0, oldest_ts = UINT64_MAX;
     uint64_t usage_sum = 0;
 
-    /* Confidence buckets 0..100 (percent) for O(C) percentile estimation */
+    // Confidence buckets 0..100 (percent) for O(C) percentile estimation
     unsigned conf_buckets[101] = {0};
 
-    /* Block type histogram (small) */
+    // Block type histogram (enum range 0..54, but allow up to 64 for future-proofing)
     unsigned type_hist[64] = {0};
     unsigned distinct_types = 0;
 
@@ -1921,7 +2113,8 @@ void fossil_ai_jellyfish_reflect(const fossil_ai_jellyfish_chain_t *chain) {
         if (b->attributes.trusted)   trusted++;
         if (b->attributes.immutable) immutable++;
 
-        if ((unsigned)b->block_type < 64) {
+        // Defensive: only count types in enum range
+        if ((unsigned)b->block_type <= JELLY_COMMIT_FINAL) {
             if (type_hist[b->block_type] == 0) distinct_types++;
             type_hist[b->block_type]++;
         }
@@ -1934,8 +2127,6 @@ void fossil_ai_jellyfish_reflect(const fossil_ai_jellyfish_chain_t *chain) {
         if (age_us < age_min_us) age_min_us = age_us;
         if (age_us > age_max_us) age_max_us = age_us;
         age_sum_us += age_us;
-
-        usage_sum += b->attributes.usage_count;
     }
 
     if (valid == 0) {
@@ -1943,7 +2134,7 @@ void fossil_ai_jellyfish_reflect(const fossil_ai_jellyfish_chain_t *chain) {
         return;
     }
 
-    /* Percentiles from bucket scan */
+    // Percentiles from bucket scan
     unsigned long cumulative = 0;
     size_t p50 = 0, p90 = 0, p99 = 0;
     size_t t50 = (size_t)(0.50 * valid);
@@ -1980,9 +2171,9 @@ void fossil_ai_jellyfish_reflect(const fossil_ai_jellyfish_chain_t *chain) {
     printf("[reflect] trusted=%zu (%.2f%%) immutable=%zu (%.2f%%) mean_usage=%.2f\n",
            trusted, trusted_ratio * 100.0, immutable, immutable_ratio * 100.0, mean_usage);
 
-    /* Optional small type histogram (only non-zero) */
+    // Print type histogram (only non-zero, using new enum range 0..54)
     printf("[reflect] type_hist:");
-    for (unsigned t = 0; t < 64; ++t) {
+    for (unsigned t = 0; t <= JELLY_COMMIT_FINAL && t < 64; ++t) {
         if (type_hist[t])
             printf(" %u:%u", t, type_hist[t]);
     }
@@ -1995,7 +2186,7 @@ void fossil_ai_jellyfish_validation_report(const fossil_ai_jellyfish_chain_t *ch
         return;
     }
 
-    /* Gather valid hashes for parent existence checks */
+    // Gather valid hashes for parent existence checks
     uint8_t valid_hashes[FOSSIL_JELLYFISH_MAX_MEM][FOSSIL_JELLYFISH_HASH_SIZE];
     size_t  valid_count = 0;
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
@@ -2024,26 +2215,26 @@ void fossil_ai_jellyfish_validation_report(const fossil_ai_jellyfish_chain_t *ch
         char anom[16];
         int ap = 0;
 
-        /* Recompute hash */
+        // Recompute hash
         uint8_t recomputed[FOSSIL_JELLYFISH_HASH_SIZE];
         fossil_ai_jellyfish_hash(b->io.input, b->io.output, recomputed);
         if (memcmp(recomputed, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE) != 0 &&
             ap < (int)sizeof(anom)-1) anom[ap++]='H';
 
-        /* Zero hash */
+        // Zero hash
         int all_zero = 1;
         for (size_t z=0; z<FOSSIL_JELLYFISH_HASH_SIZE; ++z)
             if (b->identity.commit_hash[z]) { all_zero=0; break; }
         if (all_zero && ap < (int)sizeof(anom)-1) anom[ap++]='Z';
 
-        /* Parent count / merge flag consistency */
+        // Parent count / merge flag consistency
         if (b->identity.parent_count > 4 ||
             (b->identity.parent_count >=2 && !b->identity.is_merge_commit) ||
             (b->identity.parent_count < 2 && b->identity.is_merge_commit)) {
             if (ap < (int)sizeof(anom)-1) anom[ap++]='C';
         }
 
-        /* Parent existence */
+        // Parent existence
         for (size_t p = 0; p < b->identity.parent_count && p < 4; ++p) {
             int found = 0;
             for (size_t vh = 0; vh < valid_count; ++vh) {
@@ -2058,12 +2249,12 @@ void fossil_ai_jellyfish_validation_report(const fossil_ai_jellyfish_chain_t *ch
             }
         }
 
-        /* Signed commit must have signature */
+        // Signed commit must have signature
         if (b->block_type == JELLY_COMMIT_SIGNED && b->identity.signature_len == 0) {
             if (ap < (int)sizeof(anom)-1) anom[ap++]='S';
         }
 
-        /* Confidence range */
+        // Confidence range
         if (b->attributes.confidence < 0.0f || b->attributes.confidence > 1.0f) {
             if (ap < (int)sizeof(anom)-1) anom[ap++]='F';
         }
@@ -2071,7 +2262,7 @@ void fossil_ai_jellyfish_validation_report(const fossil_ai_jellyfish_chain_t *ch
         anom[ap] = '\0';
         if (ap) anomalies_total++;
 
-        /* Commit message (truncate) */
+        // Commit message (truncate)
         char msg[33];
         if (b->identity.commit_message[0]) {
             strncpy(msg, b->identity.commit_message, 32);
@@ -2080,10 +2271,14 @@ void fossil_ai_jellyfish_validation_report(const fossil_ai_jellyfish_chain_t *ch
             strcpy(msg, "-");
         }
 
-        printf("%-4u %s  %3u  %0.3f  %-5s %s\n",
+        // Use type system for type name
+        const char *type_name = fossil_ai_jellyfish_commit_type_name(b->block_type);
+
+        printf("%-4u %s  %3u (%s) %0.3f  %-5s %s\n",
                b->identity.commit_index,
                hash8,
                (unsigned)b->block_type,
+               type_name ? type_name : "?",
                b->attributes.confidence,
                ap?anom:"-",
                msg);
@@ -2100,7 +2295,7 @@ void fossil_ai_jellyfish_validation_report(const fossil_ai_jellyfish_chain_t *ch
 bool fossil_ai_jellyfish_verify_chain(const fossil_ai_jellyfish_chain_t *chain) {
     if (!chain) return false;
 
-    /* Collect valid commit hashes */
+    // Collect valid commit hashes and indices
     uint8_t hashes[FOSSIL_JELLYFISH_MAX_MEM][FOSSIL_JELLYFISH_HASH_SIZE];
     size_t  idx_map[FOSSIL_JELLYFISH_MAX_MEM];
     size_t  vcount = 0;
@@ -2109,16 +2304,20 @@ bool fossil_ai_jellyfish_verify_chain(const fossil_ai_jellyfish_chain_t *chain) 
         const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid) continue;
 
-        /* Basic index consistency */
+        // Index consistency
         if (b->identity.commit_index != i) return false;
 
-        /* Zero hash disallowed */
+        // Type system: block_type must be valid enum
+        if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+            return false;
+
+        // Zero hash disallowed
         int all_zero = 1;
         for (size_t k = 0; k < FOSSIL_JELLYFISH_HASH_SIZE; ++k)
             if (b->identity.commit_hash[k] != 0) { all_zero = 0; break; }
         if (all_zero) return false;
 
-        /* Uniqueness (linear scan – small bound) */
+        // Uniqueness (linear scan)
         for (size_t p = 0; p < vcount; ++p)
             if (memcmp(hashes[p], b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE) == 0)
                 return false;
@@ -2128,17 +2327,17 @@ bool fossil_ai_jellyfish_verify_chain(const fossil_ai_jellyfish_chain_t *chain) 
         vcount++;
     }
 
-    /* Per-block deep checks */
+    // Per-block deep checks
     for (size_t vi = 0; vi < vcount; ++vi) {
         const fossil_ai_jellyfish_block_t *b = &chain->commits[idx_map[vi]];
 
-        /* Recompute hash (content addressing) */
+        // Recompute hash (content addressing)
         uint8_t recomputed[FOSSIL_JELLYFISH_HASH_SIZE];
         fossil_ai_jellyfish_hash(b->io.input, b->io.output, recomputed);
         if (memcmp(recomputed, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE) != 0)
             return false;
 
-        /* Parent constraints */
+        // Parent constraints
         if (b->identity.parent_count > 4) return false;
         if ((b->identity.parent_count >= 2 && !b->identity.is_merge_commit) ||
             (b->identity.parent_count < 2 && b->identity.is_merge_commit))
@@ -2146,7 +2345,7 @@ bool fossil_ai_jellyfish_verify_chain(const fossil_ai_jellyfish_chain_t *chain) 
 
         for (size_t p = 0; p < b->identity.parent_count; ++p) {
             int found = 0;
-            /* Parent must exist among valid hashes and not be self */
+            // Parent must exist among valid hashes and not be self
             if (memcmp(b->identity.parent_hashes[p],
                        b->identity.commit_hash,
                        FOSSIL_JELLYFISH_HASH_SIZE) == 0)
@@ -2160,25 +2359,31 @@ bool fossil_ai_jellyfish_verify_chain(const fossil_ai_jellyfish_chain_t *chain) 
             if (!found) return false;
         }
 
-        /* Signed commit must have signature */
-        if (b->block_type == JELLY_COMMIT_SIGNED && b->identity.signature_len == 0)
+        // Merge type semantics
+        if (b->block_type == JELLY_COMMIT_MERGE && b->identity.parent_count < 2)
             return false;
 
-        /* Length integrity */
+        // Signed commit must have signature
+        if (b->block_type == JELLY_COMMIT_SIGNED && b->identity.signature_len == 0)
+            return false;
+        if (b->block_type == JELLY_COMMIT_SIGNED && b->identity.signature_len > FOSSIL_SIGNATURE_SIZE)
+            return false;
+
+        // Length integrity
         if (b->io.input_len != strnlen(b->io.input, FOSSIL_JELLYFISH_INPUT_SIZE)) return false;
         if (b->io.output_len != strnlen(b->io.output, FOSSIL_JELLYFISH_OUTPUT_SIZE)) return false;
 
-        /* Confidence bounds */
+        // Confidence bounds
         if (b->attributes.confidence < 0.0f || b->attributes.confidence > 1.0f) return false;
     }
 
-    /* Branch head validity */
+    // Branch head validity
     for (size_t br = 0; br < chain->branch_count; ++br) {
         const uint8_t *head = chain->branches[br].head_hash;
         int all_zero = 1;
         for (size_t k = 0; k < FOSSIL_JELLYFISH_HASH_SIZE; ++k)
             if (head[k]) { all_zero = 0; break; }
-        if (all_zero) continue; /* allow empty head */
+        if (all_zero) continue; // allow empty head
 
         int found = 0;
         for (size_t vh = 0; vh < vcount; ++vh) {
@@ -2193,19 +2398,19 @@ bool fossil_ai_jellyfish_verify_chain(const fossil_ai_jellyfish_chain_t *chain) 
 bool fossil_ai_jellyfish_verify_block(const fossil_ai_jellyfish_block_t *block) {
     if (!block) return false;
 
-    /* 1. Hash integrity */
+    // 1. Hash integrity
     uint8_t recomputed[FOSSIL_JELLYFISH_HASH_SIZE];
     fossil_ai_jellyfish_hash(block->io.input, block->io.output, recomputed);
     if (memcmp(recomputed, block->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE) != 0)
         return false;
 
-    /* 2. Non-zero hash */
+    // 2. Non-zero hash
     int all_zero = 1;
     for (size_t i = 0; i < FOSSIL_JELLYFISH_HASH_SIZE; ++i)
         if (block->identity.commit_hash[i]) { all_zero = 0; break; }
     if (all_zero) return false;
 
-    /* 3. Parent constraints */
+    // 3. Parent constraints
     if (block->identity.parent_count > 4) return false;
     if ((block->identity.parent_count >= 2 && !block->identity.is_merge_commit) ||
         (block->identity.parent_count < 2 && block->identity.is_merge_commit))
@@ -2214,18 +2419,18 @@ bool fossil_ai_jellyfish_verify_block(const fossil_ai_jellyfish_block_t *block) 
         if (memcmp(block->identity.parent_hashes[p],
                    block->identity.commit_hash,
                    FOSSIL_JELLYFISH_HASH_SIZE) == 0)
-            return false; /* self-parent disallowed */
+            return false; // self-parent disallowed
         int ph_zero = 1;
         for (size_t b = 0; b < FOSSIL_JELLYFISH_HASH_SIZE; ++b)
             if (block->identity.parent_hashes[p][b]) { ph_zero = 0; break; }
-        if (ph_zero) return false; /* zero parent hash */
+        if (ph_zero) return false; // zero parent hash
     }
 
-    /* 4. Merge type semantics */
+    // 4. Merge type semantics
     if (block->block_type == JELLY_COMMIT_MERGE && block->identity.parent_count < 2)
         return false;
 
-    /* 5. Signed commit requires signature */
+    // 5. Signed commit requires signature
     if (block->block_type == JELLY_COMMIT_SIGNED) {
         if (block->identity.signature_len == 0 ||
             block->identity.signature_len > FOSSIL_SIGNATURE_SIZE)
@@ -2235,7 +2440,7 @@ bool fossil_ai_jellyfish_verify_block(const fossil_ai_jellyfish_block_t *block) 
             return false;
     }
 
-    /* 6. IO length integrity */
+    // 6. IO length integrity
     size_t in_len  = strnlen(block->io.input, FOSSIL_JELLYFISH_INPUT_SIZE);
     size_t out_len = strnlen(block->io.output, FOSSIL_JELLYFISH_OUTPUT_SIZE);
     if (in_len != block->io.input_len) return false;
@@ -2243,15 +2448,15 @@ bool fossil_ai_jellyfish_verify_block(const fossil_ai_jellyfish_block_t *block) 
     if (in_len >= FOSSIL_JELLYFISH_INPUT_SIZE) return false;
     if (out_len >= FOSSIL_JELLYFISH_OUTPUT_SIZE) return false;
 
-    /* 7. Token bounds */
+    // 7. Token bounds
     if (block->io.input_token_count > FOSSIL_JELLYFISH_MAX_TOKENS) return false;
     if (block->io.output_token_count > FOSSIL_JELLYFISH_MAX_TOKENS) return false;
 
-    /* 8. Confidence bounds */
+    // 8. Confidence bounds
     if (block->attributes.confidence < 0.0f || block->attributes.confidence > 1.0f)
         return false;
 
-    /* 9. Basic block_type sanity (enum range) */
+    // 9. Block type sanity (enum range)
     if (block->block_type < JELLY_COMMIT_UNKNOWN || block->block_type > JELLY_COMMIT_FINAL)
         return false;
 
@@ -2267,33 +2472,44 @@ float fossil_ai_jellyfish_chain_trust_score(const fossil_ai_jellyfish_chain_t *c
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
         const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid) continue;
-        if (b->attributes.pruned || b->attributes.expired) continue; /* exclude removed/expired */
+        if (b->attributes.pruned || b->attributes.expired) continue;
 
         float w = 1.0f;
-
-        /* usage weight ~ log2 via shifts (cheap) */
-        uint32_t u = b->attributes.usage_count;
-        int lg = 0;
-        while (u > 1) { u >>= 1; lg++; }
-        w += 0.10f * (float)lg;
 
         if (b->attributes.trusted)    w += 0.75f;
         if (b->attributes.immutable)  w += 0.25f;
 
         switch (b->block_type) {
+            // Core commits
             case JELLY_COMMIT_VALIDATE:
             case JELLY_COMMIT_SIGNED:   w += 0.50f; break;
-            case JELLY_COMMIT_RELEASE:
+            case JELLY_COMMIT_RELEASE:  w += 0.40f; break;
             case JELLY_COMMIT_TAG:      w += 0.40f; break;
             case JELLY_COMMIT_PATCH:    w += 0.20f; break;
+
+            // Experimental/ephemeral
             case JELLY_COMMIT_DRAFT:
             case JELLY_COMMIT_EXPERIMENT:
             case JELLY_COMMIT_STASH:    w *= 0.70f; break;
+
+            // Special/terminal states
+            case JELLY_COMMIT_CONFLICT: w *= 0.50f; break;
+            case JELLY_COMMIT_PRUNE:    w *= 0.30f; break;
+            case JELLY_COMMIT_ABANDONED:w *= 0.50f; break;
+            case JELLY_COMMIT_FINAL:    w *= 0.80f; break;
+
+            // Other types: neutral
             default: break;
         }
 
         if (b->attributes.redacted)   w *= 0.85f;
         if (b->attributes.conflicted) w *= 0.50f;
+
+        // Extended: pattern recognition, comprehension, semantic conflict
+        if (b->attributes.pattern_recognized)      w += 0.10f;
+        if (b->attributes.comprehension_success)   w += 0.10f;
+        if (b->attributes.pattern_similarity > 0.5f) w += 0.05f * b->attributes.pattern_similarity;
+        if (b->attributes.semantic_conflict_score > 0.0f) w *= (1.0f - 0.5f * b->attributes.semantic_conflict_score);
 
         float c = b->attributes.confidence;
         if (c < 0.0f) c = 0.0f;
@@ -2324,7 +2540,7 @@ void fossil_ai_jellyfish_chain_fingerprint(const fossil_ai_jellyfish_chain_t *ch
         0x8877665544332211ULL ^ ((uint64_t)FOSSIL_JELLYFISH_MAX_MEM << 32)
     };
 
-    /* Fold repo_id deterministically */
+    // Fold repo_id deterministically
     for (size_t i = 0; i < FOSSIL_DEVICE_ID_SIZE; ++i) {
         uint8_t b = chain->repo_id[i];
         acc[i & 3] ^= ((uint64_t)SBOX[b] << ((i & 7) * 8)) ^ ((uint64_t)b * PRIME);
@@ -2336,30 +2552,33 @@ void fossil_ai_jellyfish_chain_fingerprint(const fossil_ai_jellyfish_chain_t *ch
         if (!b->attributes.valid) continue;
         valid_count++;
 
-        /* Consume 32-byte commit hash as four little-endian 64-bit words */
+        // Use new type system: block_type is fossil_ai_jellyfish_commit_type_t
+        fossil_ai_jellyfish_commit_type_t type = b->block_type;
+
+        // Consume 32-byte commit hash as four little-endian 64-bit words
         for (int k = 0; k < 4; ++k) {
             uint64_t word = 0;
             const uint8_t *hp = b->identity.commit_hash + (k * 8);
             for (int j = 0; j < 8; ++j)
                 word |= (uint64_t)hp[j] << (j * 8);
 
-            /* Order-independent contribution f(h) XORed into accumulator */
-            uint8_t sidx = hp[(k * 7 + 13) & 7]; /* small variation */
+            // Order-independent contribution f(h) XORed into accumulator
+            uint8_t sidx = hp[(k * 7 + 13) & 7];
             uint64_t mix = word * PRIME;
             mix ^= (uint64_t)SBOX[sidx] << 56;
-            mix ^= (uint64_t)k << 52;
-            mix ^= (uint64_t)(b->block_type & 0xFF) << (8 * (k & 7));
+            mix ^= (uint64_t)type << 52;
+            mix ^= (uint64_t)(type & 0xFF) << (8 * (k & 7));
             acc[k] ^= mix;
         }
     }
 
-    /* Incorporate counts (commutative) */
+    // Incorporate counts (commutative)
     acc[0] ^= ((uint64_t)valid_count << 32) ^ (uint64_t)valid_count * PRIME;
     acc[1] ^= ((uint64_t)chain->count << 24) ^ ((uint64_t)FOSSIL_JELLYFISH_MAX_MEM * PRIME);
     acc[2] ^= ((uint64_t)chain->branch_count << 40);
     acc[3] ^= ((uint64_t)(valid_count ^ chain->branch_count) * 0x9e3779b185ebca87ULL);
 
-    /* Final avalanche (non-commutative but applied after commutative phase) */
+    // Final avalanche (non-commutative but applied after commutative phase)
     for (int r = 0; r < 4; ++r) {
         acc[r] ^= ROTL64(acc[(r + 1) & 3] * PRIME, 17 + r);
         acc[r] *= 0x9e3779b185ebca87ULL;
@@ -2368,7 +2587,7 @@ void fossil_ai_jellyfish_chain_fingerprint(const fossil_ai_jellyfish_chain_t *ch
         acc[r] ^= acc[(r + 3) & 3] >> (7 + r);
     }
 
-    /* Light SBOX whitening */
+    // Light SBOX whitening
     for (int k = 0; k < 4; ++k) {
         uint64_t v = acc[k];
         uint64_t w = 0;
@@ -2380,7 +2599,7 @@ void fossil_ai_jellyfish_chain_fingerprint(const fossil_ai_jellyfish_chain_t *ch
         acc[k] = w ^ ROTL64(v, (k * 11 + 13) & 63);
     }
 
-    /* Serialize little-endian into out_hash */
+    // Serialize little-endian into out_hash
     for (int k = 0; k < 4; ++k) {
         uint64_t v = acc[k];
         for (int b = 0; b < 8; ++b) {
@@ -2394,12 +2613,13 @@ void fossil_ai_jellyfish_chain_stats(const fossil_ai_jellyfish_chain_t *chain,
                                      float  out_avg_confidence[5],
                                      float  out_immutable_ratio[5])
 {
-    /* Groups:
-       0: Core (0..9)
-       1: Branching / Merging (10..19)
-       2: Tagging / Release / Archive (20..29)
-       3: Experimental / Ephemeral (30..39)
-       4: Collaboration + Special / Terminal (>=40)
+    /*
+       Groups:
+       0: Core (JELLY_COMMIT_UNKNOWN..JELLY_COMMIT_PATCH)
+       1: Branching/Merging (JELLY_COMMIT_BRANCH..JELLY_COMMIT_RESOLVE_AUTO)
+       2: Tagging/Release/Archive (JELLY_COMMIT_TAG..JELLY_COMMIT_SNAPSHOT)
+       3: Experimental/Ephemeral (JELLY_COMMIT_EXPERIMENT..JELLY_COMMIT_ROLLBACK)
+       4: Collaboration+Special/Terminal (JELLY_COMMIT_SYNC..JELLY_COMMIT_FINAL and above)
     */
     if (out_valid_count)      memset(out_valid_count, 0, sizeof(size_t)*5);
     if (out_avg_confidence)   memset(out_avg_confidence, 0, sizeof(float)*5);
@@ -2413,20 +2633,21 @@ void fossil_ai_jellyfish_chain_stats(const fossil_ai_jellyfish_chain_t *chain,
         const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid) continue;
 
-        int t = (int)b->block_type;
+        fossil_ai_jellyfish_commit_type_t t = b->block_type;
         int g;
-        if      (t >= 0  && t <= 9)   g = 0;
-        else if (t >= 10 && t <= 19)  g = 1;
-        else if (t >= 20 && t <= 29)  g = 2;
-        else if (t >= 30 && t <= 39)  g = 3;
-        else                          g = 4;
+        if      (t >= JELLY_COMMIT_UNKNOWN && t <= JELLY_COMMIT_PATCH)         g = 0;
+        else if (t >= JELLY_COMMIT_BRANCH && t <= JELLY_COMMIT_RESOLVE_AUTO)   g = 1;
+        else if (t >= JELLY_COMMIT_TAG && t <= JELLY_COMMIT_SNAPSHOT)          g = 2;
+        else if (t >= JELLY_COMMIT_EXPERIMENT && t <= JELLY_COMMIT_ROLLBACK)   g = 3;
+        else                                                                  g = 4;
 
         if (g < 0 || g > 4) g = 4;
 
         out_valid_count[g]++;
-        conf_sum[g] += (b->attributes.confidence < 0.0f) ? 0.0f :
-                       (b->attributes.confidence > 1.0f) ? 1.0f :
-                        b->attributes.confidence;
+        float conf = b->attributes.confidence;
+        if (conf < 0.0f) conf = 0.0f;
+        if (conf > 1.0f) conf = 1.0f;
+        conf_sum[g] += conf;
         if (b->attributes.immutable) immut_count[g]++;
     }
 
@@ -2450,7 +2671,7 @@ int fossil_ai_jellyfish_compare_chains(const fossil_ai_jellyfish_chain_t *a,
 
     size_t max_slots = FOSSIL_JELLYFISH_MAX_MEM;
     if (a->count > max_slots) max_slots = FOSSIL_JELLYFISH_MAX_MEM;
-    if (b->count > max_slots) max_slots = FOSSIL_JELLYFISH_MAX_MEM; /* bounded anyway */
+    if (b->count > max_slots) max_slots = FOSSIL_JELLYFISH_MAX_MEM;
 
     int diff = 0;
 
@@ -2461,37 +2682,27 @@ int fossil_ai_jellyfish_compare_chains(const fossil_ai_jellyfish_chain_t *a,
         int Avalid = A->attributes.valid;
         int Bvalid = B->attributes.valid;
 
-        /* Case: validity mismatch */
         if (Avalid != Bvalid) {
             diff++;
             continue;
         }
+        if (!Avalid) continue;
 
-        if (!Avalid) {
-            /* both invalid -> ignore */
-            continue;
-        }
-
-        /* Both valid: first compare commit hash */
         if (memcmp(A->identity.commit_hash, B->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE) != 0) {
             diff++;
             continue;
         }
 
-        /* Same hash (input+output identical). Check semantic deltas. */
         int semantic_changed = 0;
 
-        /* Commit type */
         if (A->block_type != B->block_type)
             semantic_changed = 1;
 
-        /* IO compressed/redacted flags (contents already implied by hash) */
         if (!semantic_changed &&
             (A->io.compressed != B->io.compressed ||
              A->io.redacted   != B->io.redacted))
             semantic_changed = 1;
 
-        /* Attributes (allow tiny float noise) */
         if (!semantic_changed) {
             float ca = A->attributes.confidence;
             float cb = B->attributes.confidence;
@@ -2503,31 +2714,26 @@ int fossil_ai_jellyfish_compare_chains(const fossil_ai_jellyfish_chain_t *a,
                 A->attributes.compressed   != B->attributes.compressed ||
                 A->attributes.expired      != B->attributes.expired ||
                 A->attributes.trusted      != B->attributes.trusted ||
-                A->attributes.conflicted   != B->attributes.conflicted ||
-                A->attributes.usage_count  != B->attributes.usage_count)
+                A->attributes.conflicted   != B->attributes.conflicted)
                 semantic_changed = 1;
         }
 
-        /* Classification reason */
         if (!semantic_changed &&
             strncmp(A->classify.classification_reason,
                     B->classify.classification_reason,
                     sizeof(A->classify.classification_reason)) != 0)
             semantic_changed = 1;
 
-        /* Tags */
         if (!semantic_changed &&
             memcmp(A->classify.tags, B->classify.tags, sizeof(A->classify.tags)) != 0)
             semantic_changed = 1;
 
-        /* Similarity / flags */
         if (!semantic_changed &&
             (A->classify.similarity_score != B->classify.similarity_score ||
              A->classify.is_hallucinated  != B->classify.is_hallucinated ||
              A->classify.is_contradicted  != B->classify.is_contradicted))
             semantic_changed = 1;
 
-        /* Parent list (hash already same, but ancestry could differ logically) */
         if (!semantic_changed) {
             if (A->identity.parent_count != B->identity.parent_count) {
                 semantic_changed = 1;
@@ -2538,7 +2744,6 @@ int fossil_ai_jellyfish_compare_chains(const fossil_ai_jellyfish_chain_t *a,
             }
         }
 
-        /* Commit metadata fields (message, merge flag, detached, branch id) */
         if (!semantic_changed &&
             (A->identity.is_merge_commit != B->identity.is_merge_commit ||
              A->identity.detached        != B->identity.detached ||
@@ -2558,12 +2763,8 @@ int fossil_ai_jellyfish_compare_chains(const fossil_ai_jellyfish_chain_t *a,
 uint64_t fossil_ai_jellyfish_block_age(const fossil_ai_jellyfish_block_t *block, uint64_t now) {
     if (!block) return 0;
     uint64_t ts = block->time.timestamp;
-    if (ts == 0) {
-        /* Fallback: updated_at if timestamp not set */
-        ts = block->time.updated_at;
-    }
-    if (ts == 0 || now <= ts)
-        return 0;
+    if (ts == 0) ts = block->time.updated_at;
+    if (ts == 0 || now <= ts) return 0;
     return now - ts;
 }
 
@@ -2574,50 +2775,16 @@ void fossil_ai_jellyfish_block_explain(const fossil_ai_jellyfish_block_t *block,
         return;
     }
 
-    /* Map commit type to short name */
-    const char *type = "UNKNOWN";
-    switch (block->block_type) {
-        case JELLY_COMMIT_UNKNOWN: type = "UNKNOWN"; break;
-        case JELLY_COMMIT_INIT: type = "INIT"; break;
-        case JELLY_COMMIT_OBSERVE: type = "OBSERVE"; break;
-        case JELLY_COMMIT_INFER: type = "INFER"; break;
-        case JELLY_COMMIT_VALIDATE: type = "VALIDATE"; break;
-        case JELLY_COMMIT_PATCH: type = "PATCH"; break;
-        case JELLY_COMMIT_BRANCH: type = "BRANCH"; break;
-        case JELLY_COMMIT_MERGE: type = "MERGE"; break;
-        case JELLY_COMMIT_REBASE: type = "REBASE"; break;
-        case JELLY_COMMIT_CHERRY_PICK: type = "CHERRY"; break;
-        case JELLY_COMMIT_FORK: type = "FORK"; break;
-        case JELLY_COMMIT_TAG: type = "TAG"; break;
-        case JELLY_COMMIT_RELEASE: type = "RELEASE"; break;
-        case JELLY_COMMIT_ARCHIVE: type = "ARCHIVE"; break;
-        case JELLY_COMMIT_SNAPSHOT: type = "SNAP"; break;
-        case JELLY_COMMIT_EXPERIMENT: type = "EXPER"; break;
-        case JELLY_COMMIT_STASH: type = "STASH"; break;
-        case JELLY_COMMIT_DRAFT: type = "DRAFT"; break;
-        case JELLY_COMMIT_REVERT: type = "REVERT"; break;
-        case JELLY_COMMIT_ROLLBACK: type = "ROLLBACK"; break;
-        case JELLY_COMMIT_SYNC: type = "SYNC"; break;
-        case JELLY_COMMIT_MIRROR: type = "MIRROR"; break;
-        case JELLY_COMMIT_IMPORT: type = "IMPORT"; break;
-        case JELLY_COMMIT_EXPORT: type = "EXPORT"; break;
-        case JELLY_COMMIT_SIGNED: type = "SIGNED"; break;
-        case JELLY_COMMIT_REVIEW: type = "REVIEW"; break;
-        case JELLY_COMMIT_DETACHED: type = "DETACHED"; break;
-        case JELLY_COMMIT_ABANDONED: type = "ABANDON"; break;
-        case JELLY_COMMIT_CONFLICT: type = "CONFLICT"; break;
-        case JELLY_COMMIT_PRUNE: type = "PRUNE"; break;
-        case JELLY_COMMIT_FINAL: type = "FINAL"; break;
-        default: break;
-    }
+    /* Use new type system for commit type name */
+    const char *type = fossil_ai_jellyfish_commit_type_name(block->block_type);
 
     /* Prepare truncated IO samples */
     char in[17]; char outv[17];
     size_t il = strnlen(block->io.input, sizeof(block->io.input));
     size_t ol = strnlen(block->io.output, sizeof(block->io.output));
-    if (il > 15) { memcpy(in, block->io.input, 12); memcpy(in+12, "...", 4); }
+    if (il > 15) { memcpy(in, block->io.input, 12); memcpy(in+12, "...", 4); in[16] = '\0'; }
     else { memcpy(in, block->io.input, il); in[il] = '\0'; }
-    if (ol > 15) { memcpy(outv, block->io.output, 12); memcpy(outv+12, "...", 4); }
+    if (ol > 15) { memcpy(outv, block->io.output, 12); memcpy(outv+12, "...", 4); outv[16] = '\0'; }
     else { memcpy(outv, block->io.output, ol); outv[ol] = '\0'; }
 
     /* Flags string (sparse) */
@@ -2642,7 +2809,7 @@ void fossil_ai_jellyfish_block_explain(const fossil_ai_jellyfish_block_t *block,
     snprintf(out, size,
              "#%04u %s h=%s conf=%.2f pc=%zu %s I:\"%s\" O:\"%s\"",
              block->identity.commit_index,
-             type,
+             type ? type : "UNKNOWN",
              h8,
              (block->attributes.confidence < 0.0f)?0.0f:
              (block->attributes.confidence>1.0f)?1.0f:block->attributes.confidence,
@@ -2658,12 +2825,13 @@ void fossil_ai_jellyfish_decay_confidence(fossil_ai_jellyfish_chain_t *chain, fl
     if (!chain) return;
     if (decay_rate <= 0.0f) return;
     if (decay_rate >= 1.0f) {
-        /* Full decay => zero out (respect immutability) */
+        // Full decay => zero out (respect immutability)
         for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
             fossil_ai_jellyfish_block_t *b = &chain->commits[i];
             if (!b->attributes.valid) continue;
             if (b->attributes.immutable) continue;
             b->attributes.confidence = 0.0f;
+            b->attributes.confidence_history_count = 0;
         }
         chain->updated_at = get_time_microseconds();
         return;
@@ -2677,13 +2845,17 @@ void fossil_ai_jellyfish_decay_confidence(fossil_ai_jellyfish_chain_t *chain, fl
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
         fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid) continue;
-        if (b->attributes.immutable) continue; /* preserve immutable confidence */
+        if (b->attributes.immutable) continue;
         float c = b->attributes.confidence;
         if (c <= 0.0f) continue;
-        c *= factor;
-        if (c < 0.0001f) c = 0.0f;
-        if (c > 1.0f)   c = 1.0f;
-        b->attributes.confidence = c;
+        float new_conf = c * factor;
+        if (new_conf < 0.0001f) new_conf = 0.0f;
+        if (new_conf > 1.0f)   new_conf = 1.0f;
+        b->attributes.confidence = new_conf;
+        // Update confidence history (append, bounded)
+        if (b->attributes.confidence_history_count < FOSSIL_JELLYFISH_CONFIDENCE_HISTORY_SIZE) {
+            b->attributes.confidence_history[b->attributes.confidence_history_count++] = new_conf;
+        }
         any = 1;
     }
 
@@ -2700,6 +2872,7 @@ int fossil_ai_jellyfish_trim(fossil_ai_jellyfish_chain_t *chain, size_t max_bloc
         float  confidence;
         uint64_t timestamp;
         int immutable;
+        fossil_ai_jellyfish_commit_type_t type;
     } cand[FOSSIL_JELLYFISH_MAX_MEM];
 
     size_t valid_count = 0;
@@ -2712,6 +2885,7 @@ int fossil_ai_jellyfish_trim(fossil_ai_jellyfish_chain_t *chain, size_t max_bloc
                                         b->attributes.confidence;
         cand[valid_count].timestamp = b->time.timestamp;
         cand[valid_count].immutable = b->attributes.immutable;
+        cand[valid_count].type = b->block_type;
         valid_count++;
     }
 
@@ -2733,15 +2907,19 @@ int fossil_ai_jellyfish_trim(fossil_ai_jellyfish_chain_t *chain, size_t max_bloc
     /* Sort mutable candidates ascending (worst first) by:
        1) confidence (low first)
        2) timestamp (older first)
-       3) higher index last (prefer pruning higher indices slightly) */
+       3) higher index last (prefer pruning higher indices slightly)
+       4) type (lower enum value first for stability) */
     for (size_t i = 0; i < mut_count; ++i) {
         for (size_t j = i + 1; j < mut_count; ++j) {
             int swap = 0;
             if (mut[j].confidence < mut[i].confidence) swap = 1;
             else if (mut[j].confidence == mut[i].confidence) {
                 if (mut[j].timestamp < mut[i].timestamp) swap = 1;
-                else if (mut[j].timestamp == mut[i].timestamp &&
-                         mut[j].index > mut[i].index) swap = 1;
+                else if (mut[j].timestamp == mut[i].timestamp) {
+                    if (mut[j].index > mut[i].index) swap = 1;
+                    else if (mut[j].index == mut[i].index &&
+                             mut[j].type < mut[i].type) swap = 1;
+                }
             }
             if (swap) {
                 struct candidate tmp = mut[i];
@@ -2796,17 +2974,24 @@ int fossil_ai_jellyfish_chain_compact(fossil_ai_jellyfish_chain_t *chain) {
             continue;
 
         if (read != write) {
-            chain->commits[write] = chain->commits[read]; /* struct copy */
+            chain->commits[write] = chain->commits[read]; // struct copy
             chain->commits[write].identity.commit_index = (uint32_t)write;
+            // Use new type system: ensure block_type is valid
+            if (chain->commits[write].block_type < JELLY_COMMIT_UNKNOWN ||
+                chain->commits[write].block_type > JELLY_COMMIT_FINAL)
+                chain->commits[write].block_type = JELLY_COMMIT_UNKNOWN;
             moved++;
         } else {
-            /* Ensure index consistency even if not moved */
+            // Ensure index consistency even if not moved
             chain->commits[write].identity.commit_index = (uint32_t)write;
+            if (chain->commits[write].block_type < JELLY_COMMIT_UNKNOWN ||
+                chain->commits[write].block_type > JELLY_COMMIT_FINAL)
+                chain->commits[write].block_type = JELLY_COMMIT_UNKNOWN;
         }
         write++;
     }
 
-    /* Clear remaining slots */
+    // Clear remaining slots
     for (size_t i = write; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
         memset(&chain->commits[i], 0, sizeof(chain->commits[i]));
     }
@@ -2833,7 +3018,7 @@ int fossil_ai_jellyfish_deduplicate_chain(fossil_ai_jellyfish_chain_t *chain) {
             // Compare input/output strings
             if (strcmp(a->io.input, b->io.input) == 0 &&
                 strcmp(a->io.output, b->io.output) == 0) {
-                // Retain higher confidence, or earlier if equal
+                // Use new type system for commit type comparison
                 int keep_a = (a->attributes.confidence > b->attributes.confidence) ||
                              (a->attributes.confidence == b->attributes.confidence &&
                               a->time.timestamp <= b->time.timestamp);
@@ -2865,15 +3050,13 @@ static int fossil_ai_jellyfish_compress_io_field(char *buf, size_t cap) {
     if (!buf || cap == 0) return 0;
 
     size_t orig_len = strnlen(buf, cap);
-    if (orig_len == 0 || orig_len >= cap) return 0; /* Nothing or already full (leave) */
+    if (orig_len == 0 || orig_len >= cap) return 0;
 
     const unsigned char *src = (const unsigned char *)buf;
-    char tmp[FOSSIL_JELLYFISH_OUTPUT_SIZE]; /* largest of input/output sizes (both 64) */
-    if (cap > sizeof(tmp)) cap = sizeof(tmp); /* safety clamp */
+    char tmp[FOSSIL_JELLYFISH_OUTPUT_SIZE];
+    if (cap > sizeof(tmp)) cap = sizeof(tmp);
 
     size_t s = 0;
-
-    /* Skip leading whitespace */
     while (s < orig_len && isspace(src[s])) s++;
 
     int changed = 0;
@@ -2882,47 +3065,31 @@ static int fossil_ai_jellyfish_compress_io_field(char *buf, size_t cap) {
 
     for (; s < orig_len && d + 1 < cap; ++s) {
         unsigned char c = src[s];
-
         if (isspace(c)) {
             in_space = 1;
             continue;
         }
-
-        /* Emit single space if we were in a whitespace run and not at start */
         if (in_space && d > 0) {
-            if (tmp[d] != ' ') { /* just for change detection */
-                tmp[d++] = ' ';
-            } else {
-                d++; /* space already there analytically (shouldn't happen) */
-            }
+            tmp[d++] = ' ';
         }
         in_space = 0;
-
-        /* Filter control characters (keep printable ASCII 32..126) */
         if (c < 32 || c == 127) {
             changed = 1;
             continue;
         }
-
         tmp[d++] = (char)c;
     }
-
-    /* Remove trailing space if last emitted is space */
     if (d > 0 && tmp[d - 1] == ' ')
         d--;
-
     tmp[d] = '\0';
 
     if (!changed) {
-        /* Detect differences vs original */
         if (d != orig_len || memcmp(tmp, buf, d) != 0)
             changed = 1;
     }
-
     if (changed) {
         memcpy(buf, tmp, d + 1);
     }
-
     return changed;
 }
 
@@ -2990,10 +3157,11 @@ const fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_best_memory(const fossil_
         if (c < 0.0f) c = 0.0f;
         if (c > 1.0f) c = 1.0f;
 
+        // Prefer higher confidence, then newer type, then newer timestamp
         if (c > best_conf ||
             (c == best_conf && best &&
-             (b->attributes.usage_count > best->attributes.usage_count ||
-              (b->attributes.usage_count == best->attributes.usage_count &&
+             (b->block_type > best->block_type ||
+              (b->block_type == best->block_type &&
                b->time.timestamp > best->time.timestamp)))) {
             best = b;
             best_conf = c;
@@ -3015,25 +3183,24 @@ float fossil_ai_jellyfish_knowledge_coverage(const fossil_ai_jellyfish_chain_t *
         const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
         if (!b->attributes.valid) continue;
 
-        /* Base confidence clamped */
+        // Clamp confidence
         float c = b->attributes.confidence;
         if (c < 0.0f) c = 0.0f;
         if (c > 1.0f) c = 1.0f;
         if (c == 0.0f) continue;
 
-        /* Recency: full (1.0) if <=30s old, decays toward 0.6 */
+        // Recency: full (1.0) if <=30s old, decays toward 0.6
         uint64_t ts = b->time.timestamp ? b->time.timestamp : b->time.updated_at;
         double age_s = 0.0;
         if (ts && now > ts) age_s = (double)(now - ts) / 1e6;
         double recency = 1.0;
         if (age_s > 30.0) {
-            /* Exponential-ish soft decay: floor 0.6 after long time */
-            double d = age_s / 300.0; /* scale ~5 min */
+            double d = age_s / 300.0;
             recency = 0.6 + 0.4 * exp(-d);
             if (recency < 0.6) recency = 0.6;
         }
 
-        /* Type factor */
+        // Type factor (use new type system)
         double type_factor = 1.0;
         switch (b->block_type) {
             case JELLY_COMMIT_VALIDATE:
@@ -3055,20 +3222,20 @@ float fossil_ai_jellyfish_knowledge_coverage(const fossil_ai_jellyfish_chain_t *
                 break;
         }
 
-        /* Trust / immutability bonuses */
+        // Trust / immutability bonuses
         double bonus = 1.0
             + (b->attributes.trusted ? 0.25 : 0.0)
             + (b->attributes.immutable ? 0.10 : 0.0);
 
         double w = (double)c * recency * type_factor * bonus;
 
-        /* Cap individual contribution to avoid domination */
+        // Cap individual contribution
         if (w > 1.5) w = 1.5;
 
         sum += w;
     }
 
-    /* Normalize: theoretical max ~ capacity * 1.5 -> scale to 1.0 */
+    // Normalize: theoretical max ~ capacity * 1.5 -> scale to 1.0
     double coverage = sum / (capacity * 1.5);
     if (coverage > 1.0) coverage = 1.0;
     if (coverage < 0.0) coverage = 0.0;
@@ -3093,6 +3260,9 @@ int fossil_ai_jellyfish_detect_conflict(const fossil_ai_jellyfish_chain_t *chain
             const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
             if (!b->attributes.valid) continue;
             if (b->attributes.redacted || b->io.redacted) continue;
+            /* Use new type system: only consider blocks with recognized commit types */
+            if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+                continue;
             if (strcmp(b->io.input, input) == 0) {
                 if (strcmp(b->io.output, output) != 0)
                     conflicts++;
@@ -3105,6 +3275,8 @@ int fossil_ai_jellyfish_detect_conflict(const fossil_ai_jellyfish_chain_t *chain
             const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
             if (!b->attributes.valid) continue;
             if (b->attributes.redacted || b->io.redacted) continue;
+            if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+                continue;
             if (strcmp(b->io.input, input) == 0) {
                 if (!baseline) {
                     baseline = b->io.output;
@@ -3125,13 +3297,16 @@ const fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_find_by_hash(
 
     size_t upper = chain->count;
     if (upper > FOSSIL_JELLYFISH_MAX_MEM)
-    upper = FOSSIL_JELLYFISH_MAX_MEM;
+        upper = FOSSIL_JELLYFISH_MAX_MEM;
 
     for (size_t i = 0; i < upper; ++i) {
-    const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-    if (!b->attributes.valid) continue;
-    if (memcmp(b->identity.commit_hash, hash, FOSSIL_JELLYFISH_HASH_SIZE) == 0)
-        return b;
+        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
+        if (!b->attributes.valid) continue;
+        // Defensive: only consider blocks with recognized commit types
+        if (b->block_type < JELLY_COMMIT_UNKNOWN || b->block_type > JELLY_COMMIT_FINAL)
+            continue;
+        if (memcmp(b->identity.commit_hash, hash, FOSSIL_JELLYFISH_HASH_SIZE) == 0)
+            return b;
     }
     return NULL;
 }
@@ -3140,7 +3315,11 @@ fossil_ai_jellyfish_block_t *
 fossil_ai_jellyfish_get(fossil_ai_jellyfish_chain_t *chain, size_t index) {
     if (!chain) return NULL;
     if (index >= FOSSIL_JELLYFISH_MAX_MEM) return NULL;
-    return &chain->commits[index];
+    fossil_ai_jellyfish_block_t *block = &chain->commits[index];
+    // Defensive: only return blocks with valid type enum
+    if (block->block_type < JELLY_COMMIT_UNKNOWN || block->block_type > JELLY_COMMIT_FINAL)
+        return NULL;
+    return block;
 }
 
 /* --------------------------- Block Attribute Ops --------------------------- */
@@ -3150,21 +3329,29 @@ void fossil_ai_jellyfish_mark_immutable(fossil_ai_jellyfish_block_t *block) {
     if (block->attributes.immutable) return;
     block->attributes.immutable = 1;
 
-    /* Promote trust for validated / signed / release style commits */
-    if (block->block_type == JELLY_COMMIT_VALIDATE ||
-        block->block_type == JELLY_COMMIT_SIGNED ||
-        block->block_type == JELLY_COMMIT_RELEASE ||
-        block->block_type == JELLY_COMMIT_ARCHIVE) {
-        block->attributes.trusted = 1;
-        if (block->attributes.confidence < 0.95f)
-            block->attributes.confidence = 0.95f;
+    /* Promote trust for validated / signed / release style commits using new type system */
+    switch (block->block_type) {
+        case JELLY_COMMIT_VALIDATE:
+        case JELLY_COMMIT_SIGNED:
+        case JELLY_COMMIT_RELEASE:
+        case JELLY_COMMIT_ARCHIVE:
+            block->attributes.trusted = 1;
+            if (block->attributes.confidence < 0.95f)
+                block->attributes.confidence = 0.95f;
+            break;
+        default:
+            break;
     }
 
-    /* If freezing an ephemeral state, reclassify as ARCHIVE */
-    if (block->block_type == JELLY_COMMIT_DRAFT ||
-        block->block_type == JELLY_COMMIT_EXPERIMENT ||
-        block->block_type == JELLY_COMMIT_STASH) {
-        block->block_type = JELLY_COMMIT_ARCHIVE;
+    /* If freezing an ephemeral state, reclassify as ARCHIVE using new type system */
+    switch (block->block_type) {
+        case JELLY_COMMIT_DRAFT:
+        case JELLY_COMMIT_EXPERIMENT:
+        case JELLY_COMMIT_STASH:
+            block->block_type = JELLY_COMMIT_ARCHIVE;
+            break;
+        default:
+            break;
     }
 }
 
@@ -3182,16 +3369,13 @@ int fossil_ai_jellyfish_redact_block(fossil_ai_jellyfish_block_t *block) {
         if (!buf[0]) continue;
         size_t len = strnlen(buf, caps[f]);
 
-        /* Pass 1: email masking */
+        // Pass 1: email masking
         for (size_t i = 0; i < len; ++i) {
             if (buf[i] == '@') {
-                /* Find start (back to whitespace) */
                 size_t start = i;
                 while (start > 0 && !isspace((unsigned char)buf[start-1])) start--;
-                /* Find end */
                 size_t end = i;
                 while (end + 1 < len && !isspace((unsigned char)buf[end+1])) end++;
-                /* Require at least one '.' after '@' to call it an email */
                 int dot_after = 0;
                 for (size_t k = i + 1; k <= end; ++k) if (buf[k] == '.') { dot_after = 1; break; }
                 if (dot_after) {
@@ -3207,7 +3391,7 @@ int fossil_ai_jellyfish_redact_block(fossil_ai_jellyfish_block_t *block) {
             }
         }
 
-        /* Pass 2: UUID masking (pattern 8-4-4-4-12 with hex & hyphens) */
+        // Pass 2: UUID masking (pattern 8-4-4-4-12 with hex & hyphens)
         for (size_t i = 0; i + 36 <= len; ++i) {
             int uuid = 1;
             const int dashes[4] = {8,13,18,23};
@@ -3229,7 +3413,7 @@ int fossil_ai_jellyfish_redact_block(fossil_ai_jellyfish_block_t *block) {
             }
         }
 
-        /* Pass 3: long digit sequences (>=4) */
+        // Pass 3: long digit sequences (>=4)
         for (size_t i = 0; i < len; ) {
             if (isdigit((unsigned char)buf[i])) {
                 size_t j = i;
@@ -3246,7 +3430,7 @@ int fossil_ai_jellyfish_redact_block(fossil_ai_jellyfish_block_t *block) {
             }
         }
 
-        /* Pass 4: 0xHEX... sequences (>=6 hex chars after 0x) */
+        // Pass 4: 0xHEX... sequences (>=6 hex chars after 0x)
         for (size_t i = 0; i + 2 < len; ++i) {
             if (buf[i] == '0' && (buf[i+1] == 'x' || buf[i+1] == 'X')) {
                 size_t j = i + 2;
@@ -3261,7 +3445,7 @@ int fossil_ai_jellyfish_redact_block(fossil_ai_jellyfish_block_t *block) {
             }
         }
 
-        /* Pass 5: pure hex tokens length >=16 */
+        // Pass 5: pure hex tokens length >=16
         for (size_t i = 0; i < len; ) {
             if (isxdigit((unsigned char)buf[i])) {
                 size_t j = i;
@@ -3280,31 +3464,31 @@ int fossil_ai_jellyfish_redact_block(fossil_ai_jellyfish_block_t *block) {
     }
 
     if (redactions > 0) {
-        /* Recompute lengths */
+        // Recompute lengths
         block->io.input_len  = strnlen(block->io.input,  FOSSIL_JELLYFISH_INPUT_SIZE);
         block->io.output_len = strnlen(block->io.output, FOSSIL_JELLYFISH_OUTPUT_SIZE);
 
-        /* Retokenize */
+        // Retokenize
         block->io.input_token_count  = fossil_ai_jellyfish_tokenize(
             block->io.input,  block->io.input_tokens,  FOSSIL_JELLYFISH_MAX_TOKENS);
         block->io.output_token_count = fossil_ai_jellyfish_tokenize(
             block->io.output, block->io.output_tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
-        /* Flags */
+        // Flags
         block->io.redacted = 1;
         block->attributes.redacted = 1;
 
-        /* Mild confidence reduction */
+        // Mild confidence reduction
         if (block->attributes.confidence > 0.0f)
             block->attributes.confidence *= 0.95f;
 
-        /* Update timing */
+        // Update timing
         uint64_t now = get_time_microseconds();
         uint64_t prev = block->time.updated_at ? block->time.updated_at : block->time.timestamp;
         block->time.delta_ms = (uint32_t)((now - prev)/1000ULL);
         block->time.updated_at = now;
 
-        /* Re-hash content (new commit hash reflects redaction). Tree mirrors commit. */
+        // Re-hash content (new commit hash reflects redaction). Tree mirrors commit.
         fossil_ai_jellyfish_hash(block->io.input, block->io.output, block->identity.commit_hash);
         memcpy(block->identity.tree_hash, block->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
     }
@@ -3319,14 +3503,38 @@ int fossil_ai_jellyfish_block_set_message(fossil_ai_jellyfish_block_t *block, co
     size_t newlen = strnlen(message, cap);
     if (newlen >= cap) newlen = cap - 1;
 
-    /* Unchanged? (full buffer compare up to cap) */
+    // Unchanged? (full buffer compare up to cap)
     if (strncmp(block->identity.commit_message, message, cap) == 0)
         return 0;
 
     memcpy(block->identity.commit_message, message, newlen);
     block->identity.commit_message[newlen] = '\0';
 
-    /* Update timing metadata */
+    // Heuristic: adjust confidence for certain types
+    switch (block->block_type) {
+        case JELLY_COMMIT_RELEASE:
+        case JELLY_COMMIT_ARCHIVE:
+        case JELLY_COMMIT_SIGNED:
+        case JELLY_COMMIT_VALIDATE:
+            if (block->attributes.confidence < 0.90f)
+                block->attributes.confidence = 0.90f;
+            block->attributes.trusted = 1;
+            break;
+        case JELLY_COMMIT_PRUNE:
+            block->attributes.valid = 0;
+            block->attributes.pruned = 1;
+            block->attributes.confidence = 0.0f;
+            break;
+        case JELLY_COMMIT_CONFLICT:
+            block->attributes.conflicted = 1;
+            if (block->attributes.confidence > 0.8f)
+                block->attributes.confidence *= 0.8f;
+            break;
+        default:
+            break;
+    }
+
+    // Update timing metadata
     uint64_t now = get_time_microseconds();
     if (block->time.timestamp == 0) block->time.timestamp = now;
     uint64_t prev = block->time.updated_at ? block->time.updated_at : block->time.timestamp;
@@ -3348,7 +3556,7 @@ int fossil_ai_jellyfish_block_set_type(fossil_ai_jellyfish_block_t *block,
 
     block->block_type = type;
 
-    /* Heuristic side-effects */
+    /* Heuristic side-effects using new type system */
     switch (type) {
         case JELLY_COMMIT_VALIDATE:
             block->attributes.trusted = 1;
@@ -3402,71 +3610,78 @@ int fossil_ai_jellyfish_block_set_type(fossil_ai_jellyfish_block_t *block,
 int fossil_ai_jellyfish_block_add_tag(fossil_ai_jellyfish_block_t *block, const char *tag) {
     if (!block || !tag) return -1;
 
-    /* Trim leading/trailing whitespace */
+    // Use new type system: block_type is fossil_ai_jellyfish_commit_type_t
+    if (block->block_type < JELLY_COMMIT_UNKNOWN || block->block_type > JELLY_COMMIT_FINAL)
+        return -6;
+
+    // Trim leading/trailing whitespace
     while (isspace((unsigned char)*tag)) tag++;
     if (*tag == '\0') return -2;
 
     char buf[32];
     size_t len = 0;
-    /* Copy up to 31 chars, skip trailing spaces later */
     while (tag[len] && len < sizeof(buf) - 1) {
         buf[len] = tag[len];
         len++;
     }
     buf[len] = '\0';
 
-    /* Trim trailing whitespace */
+    // Trim trailing whitespace
     while (len && isspace((unsigned char)buf[len - 1])) {
         buf[--len] = '\0';
     }
     if (len == 0) return -2;
-    if (len >= sizeof(buf)) return -3; /* overflow safeguard */
+    if (len >= sizeof(buf)) return -3;
 
-    /* Normalize: lowercase */
+    // Normalize: lowercase
     for (size_t i = 0; i < len; ++i) {
         unsigned char c = (unsigned char)buf[i];
         if (c >= 'A' && c <= 'Z') buf[i] = (char)(c - 'A' + 'a');
     }
 
-    /* Reject internal whitespace (collapse not desired for tags) */
+    // Reject internal whitespace
     for (size_t i = 0; i < len; ++i) {
         if (isspace((unsigned char)buf[i])) return -4;
     }
 
-    /* Duplicate check (case-insensitive already normalized) */
+    // Duplicate check
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_TAGS; ++i) {
         if (block->classify.tags[i][0] == '\0') continue;
         if (strncmp(block->classify.tags[i], buf, sizeof(block->classify.tags[i])) == 0)
-            return 0; /* unchanged */
+            return 0;
     }
 
-    /* Find insertion slot */
+    // Find insertion slot
     for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_TAGS; ++i) {
         if (block->classify.tags[i][0] == '\0') {
             strncpy(block->classify.tags[i], buf, sizeof(block->classify.tags[i]) - 1);
             block->classify.tags[i][sizeof(block->classify.tags[i]) - 1] = '\0';
 
-            /* Update timing metadata (similar to other mutators) */
+            // Update timing metadata
             uint64_t now = get_time_microseconds();
             if (block->time.timestamp == 0) block->time.timestamp = now;
             uint64_t prev = block->time.updated_at ? block->time.updated_at : block->time.timestamp;
             block->time.delta_ms = (uint32_t)((now - prev) / 1000ULL);
             block->time.updated_at = now;
-            return 1; /* added */
+            return 1;
         }
     }
 
-    return -5; /* no capacity */
+    return -5;
 }
 
 int fossil_ai_jellyfish_block_set_reason(fossil_ai_jellyfish_block_t *block, const char *reason) {
     if (!block || !reason) return -1;
 
-    /* Trim leading whitespace */
-    while (*reason && isspace((unsigned char)*reason)) reason++;
-    if (!*reason) return -2; /* empty after trim */
+    // Use new type system: block_type is fossil_ai_jellyfish_commit_type_t
+    if (block->block_type < JELLY_COMMIT_UNKNOWN || block->block_type > JELLY_COMMIT_FINAL)
+        return -2;
 
-    /* Copy with collapsing internal whitespace runs to single space, trimming trailing */
+    // Trim leading whitespace
+    while (*reason && isspace((unsigned char)*reason)) reason++;
+    if (!*reason) return -3; // empty after trim
+
+    // Copy with collapsing internal whitespace runs to single space, trimming trailing
     char buf[128];
     size_t cap = sizeof(buf);
     size_t w = 0;
@@ -3481,22 +3696,22 @@ int fossil_ai_jellyfish_block_set_reason(fossil_ai_jellyfish_block_t *block, con
             buf[w++] = ' ';
         }
         in_space = 0;
-        /* Filter control chars */
+        // Filter control chars
         if (c < 32 || c == 127) continue;
         buf[w++] = (char)c;
     }
     if (w > 0 && buf[w - 1] == ' ')
         w--;
     buf[w] = '\0';
-    if (w == 0) return -2;
+    if (w == 0) return -3;
 
-    /* Unchanged? */
+    // Unchanged?
     if (strncmp(block->classify.classification_reason, buf, sizeof(block->classify.classification_reason)) == 0)
         return 0;
 
     memcpy(block->classify.classification_reason, buf, w + 1);
 
-    /* Update timing metadata similar to other mutators */
+    // Update timing metadata similar to other mutators
     uint64_t now = get_time_microseconds();
     if (block->time.timestamp == 0) block->time.timestamp = now;
     uint64_t prev = block->time.updated_at ? block->time.updated_at : block->time.timestamp;
@@ -3522,12 +3737,22 @@ int fossil_ai_jellyfish_block_set_similarity(fossil_ai_jellyfish_block_t *block,
 
     block->classify.similarity_score = similarity;
 
-    /* Heuristic flags */
+    /* Heuristic flags using new type system */
     if (similarity < 0.20f) {
         block->classify.is_hallucinated = 1;
         if (!block->attributes.immutable && block->attributes.confidence > 0.0f) {
             block->attributes.confidence *= 0.90f;
             if (block->attributes.confidence < 0.0f) block->attributes.confidence = 0.0f;
+        }
+        // Ephemeral/experimental types get additional penalty
+        switch (block->block_type) {
+            case JELLY_COMMIT_EXPERIMENT:
+            case JELLY_COMMIT_DRAFT:
+            case JELLY_COMMIT_STASH:
+                block->attributes.confidence *= 0.95f;
+                break;
+            default:
+                break;
         }
     } else if (similarity > 0.30f && block->classify.is_hallucinated) {
         block->classify.is_hallucinated = 0;
@@ -3553,10 +3778,14 @@ int fossil_ai_jellyfish_block_link_forward(fossil_ai_jellyfish_block_t *block, u
     if (target_index >= (uint32_t)FOSSIL_JELLYFISH_MAX_MEM) return -2;
     if (block->identity.commit_index == target_index) return -4;
 
-    /* Duplicate check */
+    // Use new type system: block_type is fossil_ai_jellyfish_commit_type_t
+    if (block->block_type < JELLY_COMMIT_UNKNOWN || block->block_type > JELLY_COMMIT_FINAL)
+        return -5;
+
+    // Duplicate check
     for (size_t i = 0; i < block->classify.forward_ref_count; ++i) {
         if (block->classify.forward_refs[i] == target_index)
-            return 0; /* already linked */
+            return 0; // already linked
     }
 
     if (block->classify.forward_ref_count >= FOSSIL_JELLYFISH_MAX_LINKS)
@@ -3564,11 +3793,11 @@ int fossil_ai_jellyfish_block_link_forward(fossil_ai_jellyfish_block_t *block, u
 
     block->classify.forward_refs[block->classify.forward_ref_count++] = target_index;
 
-    /* Heuristic: increase reasoning depth on new forward derivation */
+    // Heuristic: increase reasoning depth on new forward derivation
     if (block->classify.reasoning_depth < 0xFFFF)
         block->classify.reasoning_depth++;
 
-    /* Timing update */
+    // Timing update
     uint64_t now = get_time_microseconds();
     uint64_t prev = block->time.updated_at ? block->time.updated_at : block->time.timestamp;
     if (block->time.timestamp == 0) block->time.timestamp = now;
@@ -3582,6 +3811,10 @@ int fossil_ai_jellyfish_block_link_cross(fossil_ai_jellyfish_block_t *block, uin
     if (!block) return -1;
     if (target_index >= (uint32_t)FOSSIL_JELLYFISH_MAX_MEM) return -2;
     if (block->identity.commit_index == target_index) return -4;
+
+    // Use new type system: block_type is fossil_ai_jellyfish_commit_type_t
+    if (block->block_type < JELLY_COMMIT_UNKNOWN || block->block_type > JELLY_COMMIT_FINAL)
+        return -5;
 
     for (size_t i = 0; i < block->classify.cross_ref_count; ++i) {
         if (block->classify.cross_refs[i] == target_index)
@@ -3616,7 +3849,7 @@ fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_add_commit(
 {
     if (!chain || !input || !output) return NULL;
 
-    /* Locate slot: append or first invalid */
+    // Locate slot: append or first invalid
     size_t index = SIZE_MAX;
     if (chain->count < FOSSIL_JELLYFISH_MAX_MEM) {
         index = chain->count;
@@ -3633,9 +3866,11 @@ fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_add_commit(
     fossil_ai_jellyfish_block_t *b = &chain->commits[index];
     memset(b, 0, sizeof(*b));
 
-    /* IO */
+    // IO
     strncpy(b->io.input,  input,  FOSSIL_JELLYFISH_INPUT_SIZE  - 1);
     strncpy(b->io.output, output, FOSSIL_JELLYFISH_OUTPUT_SIZE - 1);
+    b->io.input[FOSSIL_JELLYFISH_INPUT_SIZE - 1] = '\0';
+    b->io.output[FOSSIL_JELLYFISH_OUTPUT_SIZE - 1] = '\0';
     b->io.input_len  = strnlen(b->io.input,  FOSSIL_JELLYFISH_INPUT_SIZE);
     b->io.output_len = strnlen(b->io.output, FOSSIL_JELLYFISH_OUTPUT_SIZE);
 
@@ -3644,27 +3879,27 @@ fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_add_commit(
     b->io.output_token_count = fossil_ai_jellyfish_tokenize(
         b->io.output, b->io.output_tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
-    /* Initial hash from IO */
+    // Initial hash from IO
     fossil_ai_jellyfish_hash(b->io.input, b->io.output, b->identity.commit_hash);
 
-    /* Parent handling */
+    // Parent handling
     if (parent_count > 4) parent_count = 4;
     b->identity.parent_count = parent_count;
     for (size_t p = 0; p < parent_count; ++p) {
         memcpy(b->identity.parent_hashes[p], parent_hashes[p], FOSSIL_JELLYFISH_HASH_SIZE);
-        /* Mix parent hash into commit hash (simple XOR diffusion) */
+        // Mix parent hash into commit hash (simple XOR diffusion)
         for (size_t k = 0; k < FOSSIL_JELLYFISH_HASH_SIZE; ++k) {
             b->identity.commit_hash[k] ^= (uint8_t)(parent_hashes[p][k] + (uint8_t)(type * (p + 1)));
         }
     }
 
-    /* Mix type discriminator */
+    // Mix type discriminator
     for (size_t k = 0; k < FOSSIL_JELLYFISH_HASH_SIZE; ++k)
         b->identity.commit_hash[k] ^= (uint8_t)((type * 31u) + (uint8_t)k);
 
     memcpy(b->identity.tree_hash, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
 
-    /* Identity */
+    // Identity
     b->identity.commit_index = (uint32_t)index;
     b->identity.branch_id = 0;
     b->block_type = type;
@@ -3672,13 +3907,14 @@ fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_add_commit(
     b->identity.detached = (type == JELLY_COMMIT_DETACHED);
     if (message) {
         strncpy(b->identity.commit_message, message, sizeof(b->identity.commit_message) - 1);
+        b->identity.commit_message[sizeof(b->identity.commit_message) - 1] = '\0';
     }
 
-    /* Author / committer from repo_id */
+    // Author / committer from repo_id
     memcpy(b->identity.author_id,   chain->repo_id, FOSSIL_DEVICE_ID_SIZE);
     memcpy(b->identity.committer_id, chain->repo_id, FOSSIL_DEVICE_ID_SIZE);
 
-    /* FSON roots */
+    // FSON roots
     fossil_ai_jellyfish_fson_init(&b->classify.semantic_meta);
     fossil_ai_jellyfish_fson_make_object(&b->classify.semantic_meta);
     fossil_ai_jellyfish_fson_init(&b->io.io_meta);
@@ -3688,30 +3924,58 @@ fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_add_commit(
     fossil_ai_jellyfish_fson_init(&b->audit_meta);
     fossil_ai_jellyfish_fson_make_object(&b->audit_meta);
 
-    /* Attributes & heuristics */
+    // Attributes & heuristics (no usage_count)
     b->attributes.valid = 1;
-    b->attributes.usage_count = 0;
     switch (type) {
-        case JELLY_COMMIT_VALIDATE: b->attributes.confidence = 0.90f; b->attributes.trusted = 1; break;
-        case JELLY_COMMIT_SIGNED:   b->attributes.confidence = 0.95f; b->attributes.trusted = 1; break;
-        case JELLY_COMMIT_RELEASE:  b->attributes.confidence = 0.92f; break;
+        case JELLY_COMMIT_VALIDATE:   b->attributes.confidence = 0.90f; b->attributes.trusted = 1; break;
+        case JELLY_COMMIT_SIGNED:     b->attributes.confidence = 0.95f; b->attributes.trusted = 1; break;
+        case JELLY_COMMIT_RELEASE:    b->attributes.confidence = 0.92f; break;
         case JELLY_COMMIT_EXPERIMENT: b->attributes.confidence = 0.55f; break;
-        case JELLY_COMMIT_DRAFT:    b->attributes.confidence = 0.45f; break;
-        case JELLY_COMMIT_PATCH:    b->attributes.confidence = 0.80f; break;
-        case JELLY_COMMIT_INFER:    b->attributes.confidence = 0.75f; break;
-        default:                    b->attributes.confidence = 0.70f; break;
+        case JELLY_COMMIT_DRAFT:      b->attributes.confidence = 0.45f; break;
+        case JELLY_COMMIT_PATCH:      b->attributes.confidence = 0.80f; break;
+        case JELLY_COMMIT_INFER:      b->attributes.confidence = 0.75f; break;
+        default:                      b->attributes.confidence = 0.70f; break;
     }
+    b->attributes.confidence_history_count = 0;
+    b->attributes.trust_sources_count = 0;
+    b->attributes.pruned = 0;
+    b->attributes.redacted = 0;
+    b->attributes.deduplicated = 0;
+    b->attributes.compressed = 0;
+    b->attributes.expired = 0;
+    b->attributes.trusted = (b->attributes.trusted ? 1 : 0);
+    b->attributes.conflicted = 0;
+    b->attributes.self_healed = 0;
+    b->attributes.auto_recovered = 0;
+    b->attributes.reserved = 0;
+    b->attributes.error_code = 0;
+    b->attributes.conflict_score = 0.0f;
+    b->attributes.rollback_reason[0] = '\0';
+    b->attributes.pattern_recognized = 0;
+    b->attributes.comprehension_success = 0;
+    b->attributes.pattern_similarity = 0.0f;
+    b->attributes.pattern_id = 0;
+    memset(b->attributes.pattern_origin_chain, 0, sizeof(b->attributes.pattern_origin_chain));
+    memset(b->attributes.pattern_evolution, 0, sizeof(b->attributes.pattern_evolution));
+    b->attributes.pattern_evolution_count = 0;
+    memset(b->attributes.cross_chain_refs, 0, sizeof(b->attributes.cross_chain_refs));
+    b->attributes.cross_chain_ref_count = 0;
+    b->attributes.processing_cost_ms = 0;
+    b->attributes.resource_usage = 0;
+    b->attributes.reasoning_path_length = 0;
+    b->attributes.branch_entropy = 0.0f;
+    b->attributes.semantic_conflict_score = 0.0f;
 
     uint64_t now = get_time_microseconds();
     b->time.timestamp = now;
     b->time.updated_at = now;
 
-    /* Branch head update (default branch 0) */
+    // Branch head update (default branch 0)
     if (chain->branch_count > 0) {
         memcpy(chain->branches[0].head_hash, b->identity.commit_hash, FOSSIL_JELLYFISH_HASH_SIZE);
     }
 
-    /* Chain bookkeeping */
+    // Chain bookkeeping
     if (index == chain->count && chain->count < FOSSIL_JELLYFISH_MAX_MEM)
         chain->count++;
     chain->updated_at = now;
@@ -3727,7 +3991,9 @@ int fossil_ai_jellyfish_commit_set_parents(fossil_ai_jellyfish_block_t *block,
     if (parent_count > 4) return -2;
     if (parent_count > 0 && !parent_hashes) return -3;
 
-    /* Fast unchanged check */
+    // Use new type system: block_type is fossil_ai_jellyfish_commit_type_t
+
+    // Fast unchanged check
     int identical = 1;
     if (parent_count != block->identity.parent_count) {
         identical = 0;
@@ -3742,7 +4008,7 @@ int fossil_ai_jellyfish_commit_set_parents(fossil_ai_jellyfish_block_t *block,
     }
     if (identical) return 0;
 
-    /* Validate inputs: no self-parent, no duplicates */
+    // Validate inputs: no self-parent, no duplicates
     for (size_t p = 0; p < parent_count; ++p) {
         if (memcmp(parent_hashes[p],
                    block->identity.commit_hash,
@@ -3756,34 +4022,34 @@ int fossil_ai_jellyfish_commit_set_parents(fossil_ai_jellyfish_block_t *block,
         }
     }
 
-    /* Copy parents */
+    // Copy parents
     for (size_t p = 0; p < parent_count; ++p) {
         memcpy(block->identity.parent_hashes[p],
                parent_hashes[p],
                FOSSIL_JELLYFISH_HASH_SIZE);
     }
-    /* Zero any leftover slots from previous larger parent_count */
+    // Zero any leftover slots from previous larger parent_count
     for (size_t p = parent_count; p < 4; ++p) {
         memset(block->identity.parent_hashes[p], 0, FOSSIL_JELLYFISH_HASH_SIZE);
     }
     block->identity.parent_count = parent_count;
     block->identity.is_merge_commit = (parent_count >= 2) ? 1 : 0;
     if (block->block_type == JELLY_COMMIT_MERGE && parent_count < 2) {
-        /* Demote merge flag inconsistency */
+        // Demote merge flag inconsistency
         block->block_type = JELLY_COMMIT_PATCH;
     }
     if (parent_count >= 2 && block->block_type == JELLY_COMMIT_INFER) {
-        /* Heuristic: upgrade to MERGE if now multi-parent */
+        // Heuristic: upgrade to MERGE if now multi-parent
         block->block_type = JELLY_COMMIT_MERGE;
         block->identity.is_merge_commit = 1;
     }
 
-    /* Recompute base hash from IO */
+    // Recompute base hash from IO
     fossil_ai_jellyfish_hash(block->io.input,
                              block->io.output,
                              block->identity.commit_hash);
 
-    /* Mix parents and type exactly like add_commit() */
+    // Mix parents and type exactly like add_commit()
     for (size_t p = 0; p < parent_count; ++p) {
         for (size_t k = 0; k < FOSSIL_JELLYFISH_HASH_SIZE; ++k) {
             block->identity.commit_hash[k] ^=
@@ -3799,7 +4065,7 @@ int fossil_ai_jellyfish_commit_set_parents(fossil_ai_jellyfish_block_t *block,
            block->identity.commit_hash,
            FOSSIL_JELLYFISH_HASH_SIZE);
 
-    /* Update timing */
+    // Update timing
     uint64_t now = get_time_microseconds();
     if (block->time.timestamp == 0) block->time.timestamp = now;
     uint64_t prev = block->time.updated_at ?
@@ -3812,43 +4078,40 @@ int fossil_ai_jellyfish_commit_set_parents(fossil_ai_jellyfish_block_t *block,
 
 const char *fossil_ai_jellyfish_commit_type_name(fossil_ai_jellyfish_commit_type_t type) {
     switch (type) {
-        case JELLY_COMMIT_UNKNOWN:      return "UNKNOWN";
-        case JELLY_COMMIT_INIT:         return "INIT";
-        case JELLY_COMMIT_OBSERVE:      return "OBSERVE";
-        case JELLY_COMMIT_INFER:        return "INFER";
-        case JELLY_COMMIT_VALIDATE:     return "VALIDATE";
-        case JELLY_COMMIT_PATCH:        return "PATCH";
-
-        case JELLY_COMMIT_BRANCH:       return "BRANCH";
-        case JELLY_COMMIT_MERGE:        return "MERGE";
-        case JELLY_COMMIT_REBASE:       return "REBASE";
-        case JELLY_COMMIT_CHERRY_PICK:  return "CHERRY_PICK";
-        case JELLY_COMMIT_FORK:         return "FORK";
-
-        case JELLY_COMMIT_TAG:          return "TAG";
-        case JELLY_COMMIT_RELEASE:      return "RELEASE";
-        case JELLY_COMMIT_ARCHIVE:      return "ARCHIVE";
-        case JELLY_COMMIT_SNAPSHOT:     return "SNAPSHOT";
-
-        case JELLY_COMMIT_EXPERIMENT:   return "EXPERIMENT";
-        case JELLY_COMMIT_STASH:        return "STASH";
-        case JELLY_COMMIT_DRAFT:        return "DRAFT";
-        case JELLY_COMMIT_REVERT:       return "REVERT";
-        case JELLY_COMMIT_ROLLBACK:     return "ROLLBACK";
-
-        case JELLY_COMMIT_SYNC:         return "SYNC";
-        case JELLY_COMMIT_MIRROR:       return "MIRROR";
-        case JELLY_COMMIT_IMPORT:       return "IMPORT";
-        case JELLY_COMMIT_EXPORT:       return "EXPORT";
-        case JELLY_COMMIT_SIGNED:       return "SIGNED";
-        case JELLY_COMMIT_REVIEW:       return "REVIEW";
-
-        case JELLY_COMMIT_DETACHED:     return "DETACHED";
-        case JELLY_COMMIT_ABANDONED:    return "ABANDONED";
-        case JELLY_COMMIT_CONFLICT:     return "CONFLICT";
-        case JELLY_COMMIT_PRUNE:        return "PRUNE";
-        case JELLY_COMMIT_FINAL:        return "FINAL";
-        default:                        return "UNKNOWN";
+        case JELLY_COMMIT_UNKNOWN:        return "UNKNOWN";
+        case JELLY_COMMIT_INIT:           return "INIT";
+        case JELLY_COMMIT_OBSERVE:        return "OBSERVE";
+        case JELLY_COMMIT_INFER:          return "INFER";
+        case JELLY_COMMIT_VALIDATE:       return "VALIDATE";
+        case JELLY_COMMIT_PATCH:          return "PATCH";
+        case JELLY_COMMIT_BRANCH:         return "BRANCH";
+        case JELLY_COMMIT_MERGE:          return "MERGE";
+        case JELLY_COMMIT_REBASE:         return "REBASE";
+        case JELLY_COMMIT_CHERRY_PICK:    return "CHERRY_PICK";
+        case JELLY_COMMIT_FORK:           return "FORK";
+        case JELLY_COMMIT_RESOLVE_MANUAL: return "RESOLVE_MANUAL";
+        case JELLY_COMMIT_RESOLVE_AUTO:   return "RESOLVE_AUTO";
+        case JELLY_COMMIT_TAG:            return "TAG";
+        case JELLY_COMMIT_RELEASE:        return "RELEASE";
+        case JELLY_COMMIT_ARCHIVE:        return "ARCHIVE";
+        case JELLY_COMMIT_SNAPSHOT:       return "SNAPSHOT";
+        case JELLY_COMMIT_EXPERIMENT:     return "EXPERIMENT";
+        case JELLY_COMMIT_STASH:          return "STASH";
+        case JELLY_COMMIT_DRAFT:          return "DRAFT";
+        case JELLY_COMMIT_REVERT:         return "REVERT";
+        case JELLY_COMMIT_ROLLBACK:       return "ROLLBACK";
+        case JELLY_COMMIT_SYNC:           return "SYNC";
+        case JELLY_COMMIT_MIRROR:         return "MIRROR";
+        case JELLY_COMMIT_IMPORT:         return "IMPORT";
+        case JELLY_COMMIT_EXPORT:         return "EXPORT";
+        case JELLY_COMMIT_SIGNED:         return "SIGNED";
+        case JELLY_COMMIT_REVIEW:         return "REVIEW";
+        case JELLY_COMMIT_DETACHED:       return "DETACHED";
+        case JELLY_COMMIT_ABANDONED:      return "ABANDONED";
+        case JELLY_COMMIT_CONFLICT:       return "CONFLICT";
+        case JELLY_COMMIT_PRUNE:          return "PRUNE";
+        case JELLY_COMMIT_FINAL:          return "FINAL";
+        default:                          return "UNKNOWN";
     }
 }
 
@@ -3859,7 +4122,7 @@ int fossil_ai_jellyfish_branch_create(fossil_ai_jellyfish_chain_t *chain, const 
 
     /* Trim leading/trailing whitespace */
     while (*name && isspace((unsigned char)*name)) name++;
-    size_t len = strnlen(name, 64);
+    size_t len = strnlen(name, sizeof(chain->branches[0].name));
     while (len && isspace((unsigned char)name[len - 1])) len--;
 
     if (len == 0 || len >= sizeof(chain->branches[0].name)) return -3;
@@ -3900,15 +4163,17 @@ int fossil_ai_jellyfish_branch_create(fossil_ai_jellyfish_chain_t *chain, const 
                chain->branches[active].head_hash,
                FOSSIL_JELLYFISH_HASH_SIZE);
     } else if (chain->branch_count > 1) {
-        /* Fallback: copy from branch 0 */
         memcpy(chain->branches[idx].head_hash,
                chain->branches[0].head_hash,
                FOSSIL_JELLYFISH_HASH_SIZE);
-    } /* else (first branch) head already zeroed */
+    }
 
-    /* Initialize branch_meta FSON object */
+    /* Initialize branch_meta FSON object using new type system */
     fossil_ai_jellyfish_fson_init(&chain->branches[idx].branch_meta);
     fossil_ai_jellyfish_fson_make_object(&chain->branches[idx].branch_meta);
+
+    /* Optionally set branch_reason to empty string (new type system) */
+    chain->branches[idx].branch_reason[0] = '\0';
 
     chain->updated_at = get_time_microseconds();
     return (int)idx;
@@ -3917,7 +4182,7 @@ int fossil_ai_jellyfish_branch_create(fossil_ai_jellyfish_chain_t *chain, const 
 int fossil_ai_jellyfish_branch_checkout(fossil_ai_jellyfish_chain_t *chain, const char *name) {
     if (!chain || !name) return -1;
 
-    /* Trim leading / trailing whitespace (mirror validation style of _branch_create) */
+    // Use new type system: branch names are part of chain->branches[i].name
     while (*name && isspace((unsigned char)*name)) name++;
     size_t len = strnlen(name, sizeof(chain->branches[0].name));
     while (len && isspace((unsigned char)name[len - 1])) len--;
@@ -3925,7 +4190,6 @@ int fossil_ai_jellyfish_branch_checkout(fossil_ai_jellyfish_chain_t *chain, cons
     if (len == 0 || len >= sizeof(chain->branches[0].name))
         return -3;
 
-    /* Find existing branch */
     int found = -2;
     for (size_t i = 0; i < chain->branch_count; ++i) {
         if (strncmp(chain->branches[i].name, name, sizeof(chain->branches[i].name)) == 0) {
@@ -3935,7 +4199,7 @@ int fossil_ai_jellyfish_branch_checkout(fossil_ai_jellyfish_chain_t *chain, cons
     }
     if (found < 0) return found;
 
-    /* Update active (default) branch name if different */
+    // Update active (default) branch name if different
     if (strncmp(chain->default_branch, chain->branches[found].name,
                 sizeof(chain->default_branch)) != 0) {
         strncpy(chain->default_branch, chain->branches[found].name,
@@ -3950,23 +4214,24 @@ int fossil_ai_jellyfish_branch_checkout(fossil_ai_jellyfish_chain_t *chain, cons
 int fossil_ai_jellyfish_branch_find(const fossil_ai_jellyfish_chain_t *chain, const char *name) {
     if (!chain || !name) return -1;
 
-    /* Trim leading / trailing whitespace (mirror create/checkout) */
+    // Use new type system: branch names are part of chain->branches[i].name
     while (*name && isspace((unsigned char)*name)) name++;
     size_t len = strnlen(name, sizeof(chain->branches[0].name));
     while (len && isspace((unsigned char)name[len - 1])) len--;
 
     if (len == 0 || len >= sizeof(chain->branches[0].name))
-        return -3; /* invalid name */
+        return -3; // invalid name
 
     for (size_t i = 0; i < chain->branch_count; ++i) {
         if (strncmp(chain->branches[i].name, name, sizeof(chain->branches[i].name)) == 0)
             return (int)i;
     }
-    return -2; /* not found */
+    return -2; // not found
 }
 
 const char *fossil_ai_jellyfish_branch_active(const fossil_ai_jellyfish_chain_t *chain) {
     if (!chain) return NULL;
+    // Use new type system: branch names are part of chain->branches[i].name
     if (chain->default_branch[0] != '\0')
         return chain->default_branch;
     if (chain->branch_count > 0)
@@ -4031,7 +4296,6 @@ int fossil_ai_jellyfish_merge(fossil_ai_jellyfish_chain_t *chain,
         fossil_ai_jellyfish_find_by_hash(chain, tgt_head);
 
     if (!src_block || !tgt_block) {
-        /* Heads became invalid — treat as empty */
         if (!src_block) return -5;
         if (!tgt_block) return -6;
     }
@@ -4076,16 +4340,17 @@ int fossil_ai_jellyfish_merge(fossil_ai_jellyfish_chain_t *chain,
                                        final_msg);
     if (!merge_commit) return -7;
 
+    /* Use new type system: block_type is fossil_ai_jellyfish_commit_type_t */
+    merge_commit->block_type = JELLY_COMMIT_MERGE;
+
     /* Conflict heuristic: same input different outputs */
     if (src_block && tgt_block &&
         strcmp(src_block->io.input, tgt_block->io.input) == 0 &&
         strcmp(src_block->io.output, tgt_block->io.output) != 0) {
         merge_commit->attributes.conflicted = 1;
-        /* Mild confidence penalty */
         if (merge_commit->attributes.confidence > 0.1f)
             merge_commit->attributes.confidence *= 0.9f;
 
-        /* Append note if room */
         size_t ml = strnlen(merge_commit->identity.commit_message,
                             sizeof(merge_commit->identity.commit_message));
         const char *note = " (conflict)";
@@ -4095,16 +4360,14 @@ int fossil_ai_jellyfish_merge(fossil_ai_jellyfish_chain_t *chain,
         }
     }
 
-    /* Ensure branch head updated for target branch */
     memcpy(chain->branches[tidx].head_hash,
            merge_commit->identity.commit_hash,
            FOSSIL_JELLYFISH_HASH_SIZE);
 
-    /* If target is active branch, update default_branch head implicitly (branch 0 heuristic) */
     if (strncmp(chain->default_branch,
                 chain->branches[tidx].name,
                 sizeof(chain->default_branch)) == 0) {
-        /* Nothing extra needed: consumer functions treat default_branch by name */
+        /* Nothing extra needed */
     }
 
     return (int)merge_commit->identity.commit_index;
@@ -4116,7 +4379,7 @@ int fossil_ai_jellyfish_rebase(fossil_ai_jellyfish_chain_t *chain,
 {
     if (!chain || !branch || !onto_branch) return -1;
 
-    /* Locate branches */
+    // Use new type system for commit types
     int b_src  = fossil_ai_jellyfish_branch_find(chain, branch);
     if (b_src < 0) return -2;
     int b_onto = fossil_ai_jellyfish_branch_find(chain, onto_branch);
@@ -4126,7 +4389,6 @@ int fossil_ai_jellyfish_rebase(fossil_ai_jellyfish_chain_t *chain,
     const uint8_t *src_head  = chain->branches[b_src].head_hash;
     const uint8_t *onto_head = chain->branches[b_onto].head_hash;
 
-    /* Check empty heads (all zeros) */
     int src_empty = 1, onto_empty = 1;
     for (size_t i = 0; i < FOSSIL_JELLYFISH_HASH_SIZE; ++i) {
         if (src_head[i])  src_empty  = 0;
@@ -4143,18 +4405,15 @@ int fossil_ai_jellyfish_rebase(fossil_ai_jellyfish_chain_t *chain,
     if (!src_block) return -5;
     if (!onto_block) return -6;
 
-    /* Build rebase commit IO (reuse original source head content) */
     const char *input  = src_block->io.input[0]  ? src_block->io.input  : "rebase";
     const char *output = src_block->io.output[0] ? src_block->io.output : "rebased";
 
-    /* Single parent = onto head (classic linear rebase replay) */
     uint8_t parent[1][FOSSIL_JELLYFISH_HASH_SIZE];
     memcpy(parent[0], onto_head, FOSSIL_JELLYFISH_HASH_SIZE);
 
     char msg[256];
     const char *src_msg = src_block->identity.commit_message[0] ?
                           src_block->identity.commit_message : "head";
-    /* Safely build message with truncation to avoid overflow */
     int w = snprintf(msg, sizeof(msg), "rebase %s onto %s (src:",
                      chain->branches[b_src].name,
                      chain->branches[b_onto].name);
@@ -4168,14 +4427,7 @@ int fossil_ai_jellyfish_rebase(fossil_ai_jellyfish_chain_t *chain,
         memcpy(msg + used, src_msg, src_len);
         used += src_len;
         if (used < sizeof(msg) - 1) {
-            if (used == sizeof(msg) - 1) {
-                /* no space for closing ')' */
-            } else {
-                msg[used++] = ')';
-            }
-        } else {
-            /* Ensure room for null terminator */
-            used = sizeof(msg) - 1;
+            msg[used++] = ')';
         }
         msg[used] = '\0';
     }
@@ -4190,12 +4442,9 @@ int fossil_ai_jellyfish_rebase(fossil_ai_jellyfish_chain_t *chain,
                                        msg);
     if (!rebased) return -7;
 
-    /* Update source branch head to new rebased commit */
     memcpy(chain->branches[b_src].head_hash,
            rebased->identity.commit_hash,
            FOSSIL_JELLYFISH_HASH_SIZE);
-
-    /* If rebasing active branch name, default_branch remains same (head already updated) */
 
     return (int)rebased->identity.commit_index;
 }
@@ -4203,12 +4452,12 @@ int fossil_ai_jellyfish_rebase(fossil_ai_jellyfish_chain_t *chain,
 int fossil_ai_jellyfish_cherry_pick(fossil_ai_jellyfish_chain_t *chain, const uint8_t *commit_hash) {
     if (!chain || !commit_hash) return -1;
 
-    /* Locate source commit */
+    // Use new type system for commit lookup
     const fossil_ai_jellyfish_block_t *src =
         fossil_ai_jellyfish_find_by_hash(chain, commit_hash);
     if (!src || !src->attributes.valid) return -2;
 
-    /* Determine active branch index */
+    // Determine active branch index using new type system
     int active = -1;
     if (chain->default_branch[0]) {
         for (size_t i = 0; i < chain->branch_count; ++i) {
@@ -4222,9 +4471,9 @@ int fossil_ai_jellyfish_cherry_pick(fossil_ai_jellyfish_chain_t *chain, const ui
     }
     if (active < 0 && chain->branch_count > 0)
         active = 0;
-    if (active < 0) return -3; /* no branch available */
+    if (active < 0) return -3;
 
-    /* Parent = current active head (if any) */
+    // Parent = current active head (if any)
     uint8_t parents[1][FOSSIL_JELLYFISH_HASH_SIZE];
     size_t parent_count = 0;
     int head_nonzero = 0;
@@ -4235,7 +4484,7 @@ int fossil_ai_jellyfish_cherry_pick(fossil_ai_jellyfish_chain_t *chain, const ui
         parent_count = 1;
     }
 
-    /* Build commit message */
+    // Build commit message
     char msg[256];
     const char *orig_msg = src->identity.commit_message[0] ? src->identity.commit_message : "(no message)";
     int hdr_len = snprintf(msg, sizeof(msg), "cherry-pick %u: ", src->identity.commit_index);
@@ -4255,7 +4504,7 @@ int fossil_ai_jellyfish_cherry_pick(fossil_ai_jellyfish_chain_t *chain, const ui
         }
     }
 
-    /* Add new commit */
+    // Add new commit using new type system
     fossil_ai_jellyfish_block_t *newb =
         fossil_ai_jellyfish_add_commit(chain,
                                        src->io.input,
@@ -4266,11 +4515,11 @@ int fossil_ai_jellyfish_cherry_pick(fossil_ai_jellyfish_chain_t *chain, const ui
                                        msg);
     if (!newb) return -4;
 
-    /* Optionally inherit higher confidence */
+    // Optionally inherit higher confidence (usage_count removed)
     if (src->attributes.confidence > newb->attributes.confidence)
         newb->attributes.confidence = src->attributes.confidence;
 
-    /* Update the active branch head explicitly if not branch 0 */
+    // Update the active branch head explicitly if not branch 0
     if (active >= 0) {
         memcpy(chain->branches[active].head_hash,
                newb->identity.commit_hash,
@@ -4520,20 +4769,19 @@ int fossil_ai_jellyfish_fson_object_put(fossil_ai_jellyfish_fson_value_t *obj,
     if (!obj || !key || !value)
         return -1;
 
-    /* Ensure object type (auto-promote NULL to OBJECT) */
+    // Use new type system: ensure OBJECT type (auto-promote NULL)
     if (obj->type != JELLYFISH_FSON_TYPE_OBJECT) {
         if (obj->type == JELLYFISH_FSON_TYPE_NULL) {
             if (fossil_ai_jellyfish_fson_make_object(obj) < 0)
                 return -2;
         } else {
-            /* Reset then make object */
             fossil_ai_jellyfish_fson_reset(obj);
             if (fossil_ai_jellyfish_fson_make_object(obj) < 0)
                 return -2;
         }
     }
 
-    /* Trim leading/trailing whitespace */
+    // Trim leading/trailing whitespace
     const char *start = key;
     while (*start && (*start == ' ' || *start == '\t' || *start == '\n' || *start == '\r'))
         start++;
@@ -4543,19 +4791,19 @@ int fossil_ai_jellyfish_fson_object_put(fossil_ai_jellyfish_fson_value_t *obj,
             start[len - 1] == '\n' || start[len - 1] == '\r'))
         len--;
 
-    if (len == 0 || len >= FOSSIL_JELLYFISH_FSON_KEY_SIZE)
+    if (len == 0 || len >= FOSSIL_JELLYFISH_KEY_SIZE)
         return -3;
 
-    /* Search for existing key */
+    // Search for existing key
     size_t count = obj->u.object.count;
     for (size_t i = 0; i < count; ++i) {
-        if (strncmp(obj->u.object.keys[i], start, FOSSIL_JELLYFISH_FSON_KEY_SIZE) == 0 &&
+        if (strncmp(obj->u.object.keys[i], start, FOSSIL_JELLYFISH_KEY_SIZE) == 0 &&
             strlen(obj->u.object.keys[i]) == len) {
-            /* Existing key */
+            // Existing key
             if (obj->u.object.values[i] == value)
-                return 0; /* no-op (same pointer) */
+                return 0; // no-op (same pointer)
 
-            /* Replace: free old subtree */
+            // Replace: free old subtree
             if (obj->u.object.values[i]) {
                 fossil_ai_jellyfish_fson_reset(obj->u.object.values[i]);
                 free(obj->u.object.values[i]);
@@ -4565,11 +4813,11 @@ int fossil_ai_jellyfish_fson_object_put(fossil_ai_jellyfish_fson_value_t *obj,
         }
     }
 
-    /* New key */
+    // New key
     if (count >= FOSSIL_JELLYFISH_FSON_MAX_OBJECT)
         return -4;
 
-    /* Store key */
+    // Store key
     memcpy(obj->u.object.keys[count], start, len);
     obj->u.object.keys[count][len] = '\0';
     obj->u.object.values[count] = value;
@@ -4577,13 +4825,15 @@ int fossil_ai_jellyfish_fson_object_put(fossil_ai_jellyfish_fson_value_t *obj,
     return 1;
 }
 
-fossil_ai_jellyfish_fson_value_t *fossil_ai_jellyfish_fson_object_get(const fossil_ai_jellyfish_fson_value_t *obj,
-                                    const char *key)
+fossil_ai_jellyfish_fson_value_t *fossil_ai_jellyfish_fson_object_get(
+    const fossil_ai_jellyfish_fson_value_t *obj,
+    const char *key)
 {
     if (!obj || !key) return NULL;
+    // Use new type system: check OBJECT type
     if (obj->type != JELLYFISH_FSON_TYPE_OBJECT) return NULL;
 
-    /* Trim leading / trailing whitespace (mirror put semantics) */
+    // Trim leading/trailing whitespace (mirror put semantics)
     while (*key && (*key == ' ' || *key == '\t' || *key == '\n' || *key == '\r'))
         key++;
     size_t len = strlen(key);
@@ -4592,13 +4842,13 @@ fossil_ai_jellyfish_fson_value_t *fossil_ai_jellyfish_fson_object_get(const foss
             key[len - 1] == '\n' || key[len - 1] == '\r'))
         len--;
 
-    if (len == 0 || len >= FOSSIL_JELLYFISH_FSON_KEY_SIZE)
+    if (len == 0 || len >= FOSSIL_JELLYFISH_KEY_SIZE)
         return NULL;
 
     for (size_t i = 0; i < obj->u.object.count; ++i) {
         if (obj->u.object.keys[i][0] == '\0')
             continue;
-        /* Fast length check before strcmp */
+        // Fast length check before strcmp
         if (strlen(obj->u.object.keys[i]) != len)
             continue;
         if (strncmp(obj->u.object.keys[i], key, len) == 0)
@@ -4661,6 +4911,9 @@ int fossil_ai_jellyfish_fson_copy(const fossil_ai_jellyfish_fson_value_t *src,
     fossil_ai_jellyfish_fson_reset(dst);
 
     dst->type = src->type;
+    dst->type_flags = src->type_flags;
+    dst->reference_count = src->reference_count;
+    memcpy(dst->computed_hash, src->computed_hash, FOSSIL_JELLYFISH_HASH_SIZE);
 
     switch (src->type) {
         case JELLYFISH_FSON_TYPE_NULL:
@@ -4746,8 +4999,8 @@ int fossil_ai_jellyfish_fson_copy(const fossil_ai_jellyfish_fson_value_t *src,
                 }
                 strncpy(dst->u.object.keys[i],
                         src->u.object.keys[i],
-                        FOSSIL_JELLYFISH_FSON_KEY_SIZE - 1);
-                dst->u.object.keys[i][FOSSIL_JELLYFISH_FSON_KEY_SIZE - 1] = '\0';
+                        FOSSIL_JELLYFISH_KEY_SIZE - 1);
+                dst->u.object.keys[i][FOSSIL_JELLYFISH_KEY_SIZE - 1] = '\0';
                 dst->u.object.values[i] = dchild;
                 dst->u.object.count++;
             }
@@ -4778,12 +5031,11 @@ int fossil_ai_jellyfish_block_set_semantic_kv(fossil_ai_jellyfish_block_t *block
 
     fossil_ai_jellyfish_fson_value_t *root = &block->classify.semantic_meta;
 
-    /* Ensure root is an OBJECT (auto-promote NULL). */
+    // Use new type system: ensure OBJECT type (auto-promote NULL)
     if (root->type == JELLYFISH_FSON_TYPE_NULL) {
         if (fossil_ai_jellyfish_fson_make_object(root) < 0)
             return -2;
     } else if (root->type != JELLYFISH_FSON_TYPE_OBJECT) {
-        /* Replace incompatible type with a fresh OBJECT. */
         fossil_ai_jellyfish_fson_reset(root);
         if (fossil_ai_jellyfish_fson_make_object(root) < 0)
             return -2;
@@ -4791,7 +5043,7 @@ int fossil_ai_jellyfish_block_set_semantic_kv(fossil_ai_jellyfish_block_t *block
 
     int rc = fossil_ai_jellyfish_fson_object_put(root, key, value);
     if (rc == 1) {
-        /* Added/replaced -> update timing metadata. */
+        // Update timing metadata (usage_count removed)
         uint64_t now = get_time_microseconds();
         if (block->time.timestamp == 0)
             block->time.timestamp = now;
@@ -4811,18 +5063,22 @@ int fossil_ai_jellyfish_block_add_attachment(fossil_ai_jellyfish_block_t *block,
 
     fossil_ai_jellyfish_block_fson_t *fs = &block->fson;
 
-    /* Duplicate pointer check */
+    // Use new type system: attachments array is struct with attachment pointer, type, provenance, etc.
     for (size_t i = 0; i < fs->attachment_count; ++i) {
-        if (fs->attachments[i] == attachment)
-            return 0; /* unchanged */
+        if (fs->attachments[i].attachment == attachment)
+            return 0; // unchanged
     }
 
     if (fs->attachment_count >= FOSSIL_JELLYFISH_FSON_MAX_ARRAY)
         return -2;
 
-    fs->attachments[fs->attachment_count++] = attachment;
+    // Add attachment pointer, leave type/provenance default
+    fs->attachments[fs->attachment_count].attachment = attachment;
+    fs->attachments[fs->attachment_count].attachment_type = JELLYFISH_ATTACHMENT_OTHER;
+    memset(fs->attachments[fs->attachment_count].derived_from_commit_hash, 0, FOSSIL_JELLYFISH_HASH_SIZE);
+    fs->attachment_count++;
 
-    /* Update timing metadata */
+    // Update timing metadata (usage_count removed)
     uint64_t now = get_time_microseconds();
     if (block->time.timestamp == 0)
         block->time.timestamp = now;
@@ -4838,18 +5094,21 @@ int fossil_ai_jellyfish_block_set_audit_meta(fossil_ai_jellyfish_block_t *block,
 {
     if (!block || !meta) return -1;
 
-    /* Reset previous audit_meta if present and different pointer */
-    if (block->audit_meta.type != JELLYFISH_FSON_TYPE_NULL && &block->audit_meta != meta) {
-        fossil_ai_jellyfish_fson_reset(&block->audit_meta);
+    // Use new type system: audit_meta is a struct with audit_meta_root (OBJECT or NULL)
+    fossil_ai_jellyfish_block_audit_meta_t *ameta = &block->audit_meta;
+
+    // Reset previous audit_meta_root if present and different pointer
+    if (ameta->audit_meta_root.type != JELLYFISH_FSON_TYPE_NULL && &ameta->audit_meta_root != meta) {
+        fossil_ai_jellyfish_fson_reset(&ameta->audit_meta_root);
     }
 
-    /* Deep copy meta into block->audit_meta */
-    if (&block->audit_meta != meta) {
-        if (fossil_ai_jellyfish_fson_copy(meta, &block->audit_meta) < 0)
+    // Deep copy meta into audit_meta_root
+    if (&ameta->audit_meta_root != meta) {
+        if (fossil_ai_jellyfish_fson_copy(meta, &ameta->audit_meta_root) < 0)
             return -2;
     }
 
-    /* Update timing metadata */
+    // Update timing metadata (usage_count removed)
     uint64_t now = get_time_microseconds();
     if (block->time.timestamp == 0)
         block->time.timestamp = now;
@@ -4870,7 +5129,7 @@ int fossil_ai_jellyfish_repo_meta_put(fossil_ai_jellyfish_chain_t *chain,
 
     fossil_ai_jellyfish_fson_value_t *root = &chain->repo_meta;
 
-    /* Ensure OBJECT root (auto-promote or replace incompatible type) */
+    // Use new type system: ensure OBJECT root (auto-promote or replace incompatible type)
     if (root->type == JELLYFISH_FSON_TYPE_NULL) {
         if (fossil_ai_jellyfish_fson_make_object(root) < 0)
             return -2;
@@ -4895,15 +5154,17 @@ int fossil_ai_jellyfish_block_sign(fossil_ai_jellyfish_block_t *block, const uin
         block->io.input_len == 0 ||
         block->io.output_len == 0) return -2;
 
-    /* Build two 32-byte digests to fill 64-byte signature slot */
+    // Use new type system: block_type is fossil_ai_jellyfish_commit_type_t
+
+    // Build two 32-byte digests to fill 64-byte signature slot
     uint8_t digest1[FOSSIL_JELLYFISH_HASH_SIZE];
     uint8_t digest2[FOSSIL_JELLYFISH_HASH_SIZE];
 
-    /* Canonical-ish serialization parts */
-    char buf1[ FOSSIL_JELLYFISH_INPUT_SIZE + FOSSIL_JELLYFISH_OUTPUT_SIZE + 96 ];
-    char buf2[ FOSSIL_JELLYFISH_INPUT_SIZE + FOSSIL_JELLYFISH_OUTPUT_SIZE + 96 ];
+    // Canonical-ish serialization parts
+    char buf1[FOSSIL_JELLYFISH_INPUT_SIZE + FOSSIL_JELLYFISH_OUTPUT_SIZE + 96];
+    char buf2[FOSSIL_JELLYFISH_INPUT_SIZE + FOSSIL_JELLYFISH_OUTPUT_SIZE + 96];
 
-    /* Serialize parent hashes (up to 4) compactly as hex prefixes (first 4 bytes each) */
+    // Serialize parent hashes (up to 4) compactly as hex prefixes (first 4 bytes each)
     char parents_hex[4 * 8 + 1];
     size_t phw = 0;
     for (size_t p = 0; p < block->identity.parent_count && p < 4; ++p) {
@@ -4913,13 +5174,13 @@ int fossil_ai_jellyfish_block_sign(fossil_ai_jellyfish_block_t *block, const uin
     }
     parents_hex[phw] = '\0';
 
-    /* First buffer: priv_key[0..15] + commit hash + input + output + parents */
+    // First buffer: priv_key[0..15] + commit hash + input + output + parents
     size_t off = 0;
     for (int i = 0; i < 16; ++i) {
         sprintf(buf1 + off, "%02X", priv_key[i]);
         off += 2;
     }
-    for (int i = 0; i < 8; ++i) { /* first 8 bytes commit hash */
+    for (int i = 0; i < 8; ++i) { // first 8 bytes commit hash
         sprintf(buf1 + off, "%02X", block->identity.commit_hash[i]);
         off += 2;
     }
@@ -4934,13 +5195,13 @@ int fossil_ai_jellyfish_block_sign(fossil_ai_jellyfish_block_t *block, const uin
     off = strnlen(buf1, sizeof(buf1));
     buf1[off] = '\0';
 
-    /* Second buffer: priv_key[16..31] + tree hash + output + input + block_type */
+    // Second buffer: priv_key[16..31] + tree hash + output + input + block_type
     off = 0;
     for (int i = 16; i < 32; ++i) {
         sprintf(buf2 + off, "%02X", priv_key[i]);
         off += 2;
     }
-    for (int i = 0; i < 8; ++i) { /* first 8 bytes tree hash */
+    for (int i = 0; i < 8; ++i) { // first 8 bytes tree hash
         sprintf(buf2 + off, "%02X", block->identity.tree_hash[i]);
         off += 2;
     }
@@ -4956,7 +5217,7 @@ int fossil_ai_jellyfish_block_sign(fossil_ai_jellyfish_block_t *block, const uin
     fossil_ai_jellyfish_hash(buf1, buf2, digest1);
     fossil_ai_jellyfish_hash(buf2, buf1, digest2);
 
-    /* If signature already matches, no change */
+    // If signature already matches, no change
     if (block->identity.signature_len == FOSSIL_SIGNATURE_SIZE &&
         memcmp(block->identity.signature, digest1, 32) == 0 &&
         memcmp(block->identity.signature + 32, digest2, 32) == 0) {
@@ -4967,14 +5228,14 @@ int fossil_ai_jellyfish_block_sign(fossil_ai_jellyfish_block_t *block, const uin
     memcpy(block->identity.signature + 32, digest2, 32);
     block->identity.signature_len = FOSSIL_SIGNATURE_SIZE;
 
-    /* Mark as signed/trusted */
+    // Mark as signed/trusted using new type system
     if (block->block_type != JELLY_COMMIT_SIGNED)
         block->block_type = JELLY_COMMIT_SIGNED;
     block->attributes.trusted = 1;
     if (block->attributes.confidence < 0.95f)
         block->attributes.confidence = 0.95f;
 
-    /* Timestamp update */
+    // Timestamp update
     uint64_t now = get_time_microseconds();
     if (block->time.timestamp == 0) block->time.timestamp = now;
     uint64_t prev = block->time.updated_at ? block->time.updated_at : block->time.timestamp;
@@ -4991,13 +5252,16 @@ bool fossil_ai_jellyfish_block_verify_signature(const fossil_ai_jellyfish_block_
     if (block->identity.signature_len != FOSSIL_SIGNATURE_SIZE) return false;
     if (block->io.input_len == 0 || block->io.output_len == 0) return false;
 
+    // Use new type system for commit type
+    fossil_ai_jellyfish_commit_type_t type = block->block_type;
+
     uint8_t digest1[FOSSIL_JELLYFISH_HASH_SIZE];
     uint8_t digest2[FOSSIL_JELLYFISH_HASH_SIZE];
 
     char buf1[FOSSIL_JELLYFISH_INPUT_SIZE + FOSSIL_JELLYFISH_OUTPUT_SIZE + 96];
     char buf2[FOSSIL_JELLYFISH_INPUT_SIZE + FOSSIL_JELLYFISH_OUTPUT_SIZE + 96];
 
-    /* Parents hex (first 4 bytes each -> 8 hex chars) */
+    // Parents hex (first 4 bytes each -> 8 hex chars)
     char parents_hex[4 * 8 + 1];
     size_t phw = 0;
     for (size_t p = 0; p < block->identity.parent_count && p < 4; ++p) {
@@ -5007,7 +5271,7 @@ bool fossil_ai_jellyfish_block_verify_signature(const fossil_ai_jellyfish_block_
     }
     parents_hex[phw] = '\0';
 
-    /* buf1: pub_key[0..15] + first 8 bytes commit hash + |input|output|parents */
+    // buf1: pub_key[0..15] + first 8 bytes commit hash + |input|output|parents
     size_t off = 0;
     for (int i = 0; i < 16; ++i) {
         sprintf(buf1 + off, "%02X", pub_key[i]);
@@ -5028,7 +5292,7 @@ bool fossil_ai_jellyfish_block_verify_signature(const fossil_ai_jellyfish_block_
     off = strnlen(buf1, sizeof(buf1));
     buf1[off] = '\0';
 
-    /* buf2: pub_key[16..31] + first 8 bytes tree hash + |output|input|type */
+    // buf2: pub_key[16..31] + first 8 bytes tree hash + |output|input|type
     off = 0;
     for (int i = 16; i < 32; ++i) {
         sprintf(buf2 + off, "%02X", pub_key[i]);
@@ -5044,7 +5308,7 @@ bool fossil_ai_jellyfish_block_verify_signature(const fossil_ai_jellyfish_block_
     buf2[off++] = '|';
     strncpy(buf2 + off, block->io.input, FOSSIL_JELLYFISH_INPUT_SIZE - 1);
     off += block->io.input_len;
-    off += snprintf(buf2 + off, sizeof(buf2) - off, "|%u", (unsigned)block->block_type);
+    off += snprintf(buf2 + off, sizeof(buf2) - off, "|%u", (unsigned)type);
     buf2[sizeof(buf2)-1] = '\0';
 
     fossil_ai_jellyfish_hash(buf1, buf2, digest1);
@@ -5084,7 +5348,7 @@ size_t fossil_ai_jellyfish_tokenize(const char *input,
             if (tlen + 1 < FOSSIL_JELLYFISH_TOKEN_SIZE) {
                 if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
                 tok[tlen++] = (char)c;
-            } /* else: silently drop extra chars of an overlong token */
+            }
         } else {
             if (in_token) {
                 tok[tlen] = '\0';
@@ -5103,7 +5367,6 @@ size_t fossil_ai_jellyfish_tokenize(const char *input,
         i++;
     }
 
-    /* Flush trailing token */
     if (in_token && count < max_tokens) {
         tok[tlen] = '\0';
         strncpy(tokens[count], tok, FOSSIL_JELLYFISH_TOKEN_SIZE);
@@ -5145,6 +5408,7 @@ int fossil_ai_jellyfish_clone_chain(const fossil_ai_jellyfish_chain_t *src,
         if (fossil_ai_jellyfish_fson_copy(&src->branches[b].branch_meta,
                                           &dst->branches[b].branch_meta) < 0)
             return -2;
+        strncpy(dst->branches[b].branch_reason, src->branches[b].branch_reason, sizeof(dst->branches[b].branch_reason)-1);
     }
 
     int valid_cloned = 0;
@@ -5193,9 +5457,9 @@ int fossil_ai_jellyfish_clone_chain(const fossil_ai_jellyfish_chain_t *src,
         db->fson.attachment_count = 0;
         for (size_t a = 0; a < sb->fson.attachment_count &&
                                a < FOSSIL_JELLYFISH_FSON_MAX_ARRAY; ++a) {
-            fossil_ai_jellyfish_fson_value_t *satt = sb->fson.attachments[a];
+            fossil_ai_jellyfish_fson_value_t *satt = sb->fson.attachments[a].attachment;
             if (!satt) {
-                db->fson.attachments[a] = NULL;
+                db->fson.attachments[a].attachment = NULL;
                 continue;
             }
             fossil_ai_jellyfish_fson_value_t *datt =
@@ -5207,7 +5471,11 @@ int fossil_ai_jellyfish_clone_chain(const fossil_ai_jellyfish_chain_t *src,
                 free(datt);
                 return -2;
             }
-            db->fson.attachments[a] = datt;
+            db->fson.attachments[a].attachment = datt;
+            db->fson.attachments[a].attachment_type = sb->fson.attachments[a].attachment_type;
+            memcpy(db->fson.attachments[a].derived_from_commit_hash,
+                   sb->fson.attachments[a].derived_from_commit_hash,
+                   FOSSIL_JELLYFISH_HASH_SIZE);
             db->fson.attachment_count++;
         }
 

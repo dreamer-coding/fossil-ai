@@ -54,12 +54,12 @@ FOSSIL_TEARDOWN(c_jellyfish_fixture) {
 FOSSIL_TEST_CASE(c_test_jellyfish_hash_basic) {
     const char *input = "hello";
     const char *output = "world";
-    uint8_t hash[32] = {0};
+    uint8_t hash[FOSSIL_JELLYFISH_HASH_SIZE] = {0};
 
     fossil_ai_jellyfish_hash(input, output, hash);
 
     int nonzero = 0;
-    for (size_t i = 0; i < sizeof(hash); ++i) {
+    for (size_t i = 0; i < FOSSIL_JELLYFISH_HASH_SIZE; ++i) {
         if (hash[i] != 0) {
             nonzero = 1;
             break;
@@ -71,13 +71,13 @@ FOSSIL_TEST_CASE(c_test_jellyfish_hash_basic) {
 FOSSIL_TEST_CASE(c_test_jellyfish_hash_consistency) {
     const char *input = "repeat";
     const char *output = "test";
-    uint8_t hash1[32] = {0};
-    uint8_t hash2[32] = {0};
+    uint8_t hash1[FOSSIL_JELLYFISH_HASH_SIZE] = {0};
+    uint8_t hash2[FOSSIL_JELLYFISH_HASH_SIZE] = {0};
 
     fossil_ai_jellyfish_hash(input, output, hash1);
     fossil_ai_jellyfish_hash(input, output, hash2);
 
-    ASSUME_ITS_TRUE(memcmp(hash1, hash2, sizeof(hash1)) == 0);
+    ASSUME_ITS_TRUE(memcmp(hash1, hash2, FOSSIL_JELLYFISH_HASH_SIZE) == 0);
 }
 
 FOSSIL_TEST_CASE(c_test_jellyfish_hash_difference) {
@@ -85,14 +85,14 @@ FOSSIL_TEST_CASE(c_test_jellyfish_hash_difference) {
     const char *output1 = "bar";
     const char *input2 = "baz";
     const char *output2 = "qux";
-    uint8_t hash1[32] = {0};
-    uint8_t hash2[32] = {0};
+    uint8_t hash1[FOSSIL_JELLYFISH_HASH_SIZE] = {0};
+    uint8_t hash2[FOSSIL_JELLYFISH_HASH_SIZE] = {0};
 
     fossil_ai_jellyfish_hash(input1, output1, hash1);
     fossil_ai_jellyfish_hash(input2, output2, hash2);
 
     int different = 0;
-    for (size_t i = 0; i < sizeof(hash1); ++i) {
+    for (size_t i = 0; i < FOSSIL_JELLYFISH_HASH_SIZE; ++i) {
         if (hash1[i] != hash2[i]) {
             different = 1;
             break;
@@ -101,7 +101,6 @@ FOSSIL_TEST_CASE(c_test_jellyfish_hash_difference) {
     ASSUME_ITS_TRUE(different);
 }
 
-/* Updated: initialization now sets branch info, repo meta, commit indices, etc. */
 FOSSIL_TEST_CASE(c_test_jellyfish_init_zeroes_chain) {
     fossil_ai_jellyfish_chain_t chain;
     memset(&chain, 0xAA, sizeof(chain));
@@ -112,14 +111,12 @@ FOSSIL_TEST_CASE(c_test_jellyfish_init_zeroes_chain) {
     ASSUME_ITS_EQUAL_CSTR(chain.default_branch, "main");
     ASSUME_ITS_TRUE(chain.created_at != 0);
     ASSUME_ITS_TRUE(chain.updated_at != 0);
-    /* First few repo_id bytes should be non-zero (probabilistic but safe) */
     int rid_nonzero = 0;
     for (size_t i = 0; i < FOSSIL_DEVICE_ID_SIZE; ++i) {
         if (chain.repo_id[i] != 0) { rid_nonzero = 1; break; }
     }
     ASSUME_ITS_TRUE(rid_nonzero);
-    /* Commits are cleared logically: invalid & confidence = 0, index set */
-    for (size_t i = 0; i < 8; ++i) {
+    for (size_t i = 0; i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
         ASSUME_ITS_EQUAL_I32((int)chain.commits[i].identity.commit_index, (int)i);
         ASSUME_ITS_FALSE(chain.commits[i].attributes.valid);
         ASSUME_ITS_TRUE(fabsf(chain.commits[i].attributes.confidence - 0.0f) < 0.00001f);
@@ -278,7 +275,7 @@ FOSSIL_TEST_CASE(c_test_jellyfish_decay_confidence) {
 }
 
 FOSSIL_TEST_CASE(c_test_jellyfish_tokenize_basic) {
-    char tokens[8][16];
+    char tokens[8][FOSSIL_JELLYFISH_TOKEN_SIZE];
     size_t n = fossil_ai_jellyfish_tokenize("Hello, world! This is a test.", tokens, 8);
 
     ASSUME_ITS_TRUE(n > 0);
@@ -324,7 +321,6 @@ FOSSIL_TEST_CASE(c_test_jellyfish_detect_conflict) {
     ASSUME_ITS_EQUAL_I32(no_conflict, 0);
 }
 
-/* Updated: build a syntactically valid block manually (hash & lengths) */
 FOSSIL_TEST_CASE(c_test_jellyfish_verify_block_valid_and_invalid) {
     fossil_ai_jellyfish_block_t block;
     memset(&block, 0, sizeof(block));
@@ -343,7 +339,7 @@ FOSSIL_TEST_CASE(c_test_jellyfish_verify_block_valid_and_invalid) {
     bool valid = fossil_ai_jellyfish_verify_block(&block);
     ASSUME_ITS_TRUE(valid);
 
-    block.io.input[0] = '\0'; /* length mismatch triggers invalid */
+    block.io.input[0] = '\0';
     bool invalid = fossil_ai_jellyfish_verify_block(&block);
     ASSUME_ITS_FALSE(invalid);
 }
@@ -437,7 +433,6 @@ FOSSIL_TEST_CASE(c_test_jellyfish_best_match_returns_most_confident) {
     ASSUME_ITS_EQUAL_CSTR(best->io.output, "second");
 }
 
-/* Updated: redaction now masks patterns instead of inserting "REDACTED" */
 FOSSIL_TEST_CASE(c_test_jellyfish_redact_block_redacts_fields) {
     fossil_ai_jellyfish_block_t block;
     memset(&block, 0, sizeof(block));
@@ -462,7 +457,6 @@ FOSSIL_TEST_CASE(c_test_jellyfish_redact_block_redacts_fields) {
     ASSUME_ITS_TRUE(result > 0);
     ASSUME_ITS_FALSE(strcmp(orig_in, block.io.input) == 0);
     ASSUME_ITS_FALSE(strcmp(orig_out, block.io.output) == 0);
-    /* Expect masked characters */
     ASSUME_ITS_TRUE(strchr(block.io.input, 'x') != NULL || strchr(block.io.input, '0') != NULL);
     ASSUME_ITS_TRUE(strchr(block.io.output, 'x') != NULL || strchr(block.io.output, '0') != NULL);
 }
@@ -607,7 +601,7 @@ FOSSIL_TEST_CASE(c_test_jellyfish_reason_verbose_returns_match) {
     fossil_ai_jellyfish_chain_t chain;
     fossil_ai_jellyfish_init(&chain);
     fossil_ai_jellyfish_learn(&chain, "input", "output");
-    char out[64] = {0};
+    char out[FOSSIL_JELLYFISH_TOKEN_SIZE * 2] = {0};
     float conf = 0.0f;
     const fossil_ai_jellyfish_block_t *block = NULL;
     bool found = fossil_ai_jellyfish_reason_verbose(&chain, "input", out, &conf, &block);
@@ -620,7 +614,7 @@ FOSSIL_TEST_CASE(c_test_jellyfish_reason_verbose_returns_match) {
 FOSSIL_TEST_CASE(c_test_jellyfish_reason_verbose_returns_false_for_no_match) {
     fossil_ai_jellyfish_chain_t chain;
     fossil_ai_jellyfish_init(&chain);
-    char out[64] = {0};
+    char out[FOSSIL_JELLYFISH_TOKEN_SIZE * 2] = {0};
     float conf = 0.0f;
     const fossil_ai_jellyfish_block_t *block = NULL;
     bool found = fossil_ai_jellyfish_reason_verbose(&chain, "nope", out, &conf, &block);

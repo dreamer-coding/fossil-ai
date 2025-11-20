@@ -3921,8 +3921,8 @@ fossil_ai_jellyfish_block_t *fossil_ai_jellyfish_add_commit(
     fossil_ai_jellyfish_fson_make_object(&b->io.io_meta);
     fossil_ai_jellyfish_fson_init(&b->fson.root);
     fossil_ai_jellyfish_fson_make_object(&b->fson.root);
-    fossil_ai_jellyfish_fson_init(&b->audit_meta);
-    fossil_ai_jellyfish_fson_make_object(&b->audit_meta);
+    fossil_ai_jellyfish_fson_init(&b->audit_meta.audit_meta_root);
+    fossil_ai_jellyfish_fson_make_object(&b->audit_meta.audit_meta_root);
 
     // Attributes & heuristics (no usage_count)
     b->attributes.valid = 1;
@@ -5448,9 +5448,9 @@ int fossil_ai_jellyfish_clone_chain(const fossil_ai_jellyfish_chain_t *src,
             return -2;
 
         /* Audit meta */
-        fossil_ai_jellyfish_fson_init(&db->audit_meta);
-        if (fossil_ai_jellyfish_fson_copy(&sb->audit_meta,
-                                          &db->audit_meta) < 0)
+        fossil_ai_jellyfish_fson_init(&db->audit_meta.audit_meta_root);
+        if (fossil_ai_jellyfish_fson_copy(&sb->audit_meta.audit_meta_root,
+                                          &db->audit_meta.audit_meta_root) < 0)
             return -2;
 
         /* Attachments (each is an owned subtree) */

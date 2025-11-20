@@ -36,7 +36,7 @@ void fossil_ai_lang_process(const fossil_ai_lang_pipeline_t *pipe, const char *i
     }
 
     if (pipe->tokenize) {
-        out->token_count = fossil_ai_jellyfish_tokenize(src, (char (*)[FOSSIL_JELLYFISH_TOKEN_SIZE])out->tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+        out->token_count = fossil_ai_jellyfish_tokenize(src, (char (*)[16])out->tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
     }
 
     if (pipe->detect_emotion) {
@@ -62,7 +62,7 @@ void fossil_ai_lang_process(const fossil_ai_lang_pipeline_t *pipe, const char *i
 
 size_t fossil_ai_lang_tokenize(const char *input, char tokens[][FOSSIL_JELLYFISH_TOKEN_SIZE], size_t max_tokens) {
     // Delegate to Jellyfish API
-    return fossil_ai_jellyfish_tokenize(input, (char (*)[FOSSIL_JELLYFISH_TOKEN_SIZE])tokens, max_tokens);
+    return fossil_ai_jellyfish_tokenize(input, (char (*)[16])tokens, max_tokens);
 }
 
 bool fossil_ai_lang_is_question(const char *input) {
@@ -106,7 +106,7 @@ float fossil_ai_lang_detect_emotion(const char *input) {
 
     float score = 0.0f;
     char tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
-    size_t n = fossil_ai_jellyfish_tokenize(input, (char (*)[FOSSIL_JELLYFISH_TOKEN_SIZE])tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t n = fossil_ai_jellyfish_tokenize(input, (char (*)[16])tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
     for (size_t i = 0; i < n; ++i) {
         for (size_t j = 0; j < sizeof(positive) / sizeof(positive[0]); ++j)
@@ -301,7 +301,7 @@ void fossil_ai_lang_normalize(const char *input, char *out, size_t out_size) {
 
 void fossil_ai_lang_summarize(const char *input, char *out, size_t out_size) {
     char tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
-    size_t token_count = fossil_ai_jellyfish_tokenize(input, (char (*)[FOSSIL_JELLYFISH_TOKEN_SIZE])tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t token_count = fossil_ai_jellyfish_tokenize(input, (char (*)[16])tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
     size_t out_len = 0;
     for (size_t i = 0; i < token_count && out_len < out_size - 1; ++i) {
@@ -333,7 +333,7 @@ void fossil_ai_lang_extract_focus(const char *input, char *out, size_t out_size)
     };
 
     char tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
-    size_t count = fossil_ai_jellyfish_tokenize(input, (char (*)[FOSSIL_JELLYFISH_TOKEN_SIZE])tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t count = fossil_ai_jellyfish_tokenize(input, (char (*)[16])tokens, FOSSIL_JELLYFISH_MAX_TOKENS);
 
     for (size_t i = 0; i < count; ++i) {
         int skip = 0;
@@ -359,8 +359,8 @@ float fossil_ai_lang_similarity(const char *a, const char *b) {
     char tokens_a[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
     char tokens_b[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE];
 
-    size_t count_a = fossil_ai_jellyfish_tokenize(a, (char (*)[FOSSIL_JELLYFISH_TOKEN_SIZE])tokens_a, FOSSIL_JELLYFISH_MAX_TOKENS);
-    size_t count_b = fossil_ai_jellyfish_tokenize(b, (char (*)[FOSSIL_JELLYFISH_TOKEN_SIZE])tokens_b, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t count_a = fossil_ai_jellyfish_tokenize(a, (char (*)[16])tokens_a, FOSSIL_JELLYFISH_MAX_TOKENS);
+    size_t count_b = fossil_ai_jellyfish_tokenize(b, (char (*)[16])tokens_b, FOSSIL_JELLYFISH_MAX_TOKENS);
 
     size_t match = 0;
     for (size_t i = 0; i < count_a; ++i) {

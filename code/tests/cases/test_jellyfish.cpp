@@ -103,7 +103,7 @@ FOSSIL_TEST_CASE(cpp_test_jellyfish_hash_difference) {
 
 FOSSIL_TEST_CASE(cpp_test_jellyfish_init_zeroes_chain) {
     fossil::ai::Jellyfish jf;
-    memset(&jf, 0xAA, sizeof(jf));
+    memset((void*)&jf, 0xAA, sizeof(jf));
     jf.init();
 
     const fossil_ai_jellyfish_chain_t &chain = *reinterpret_cast<const fossil_ai_jellyfish_chain_t*>(&jf);

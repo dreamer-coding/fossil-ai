@@ -1220,6 +1220,8 @@ namespace fossil {
                 return ::fossil_ai_jellyfish_cherry_pick(&chain_, commit_hash);
             }
 
+        };
+
     } // namespace ai
 
 } // namespace fossil

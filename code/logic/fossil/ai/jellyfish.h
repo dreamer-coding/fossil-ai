@@ -129,50 +129,6 @@ typedef enum {
     JELLY_COMMIT_FINAL = 54            /**< Terminal or end-of-life commit */
 } fossil_ai_jellyfish_commit_type_t;
 
-/* ---------------------------------------------------------------------------
- * Jellyfish FSON v2: Lightweight Value Types (adapted for fossil_ai_jellyfish_)
- * Static-capacity containers to match Jellyfish embedded style (no realloc).
- * --------------------------------------------------------------------------- */
-
-/**
- * @brief Enumerates FSON value types for Jellyfish AI.
- * Includes scalar, composite, and extended types.
- */
-typedef enum {
-    JELLYFISH_FSON_TYPE_NULL = 0,      /**< Null value */
-    JELLYFISH_FSON_TYPE_BOOL,          /**< Boolean value */
-
-    /* Explicit scalar types */
-    JELLYFISH_FSON_TYPE_I8,            /**< 8-bit signed integer */
-    JELLYFISH_FSON_TYPE_I16,           /**< 16-bit signed integer */
-    JELLYFISH_FSON_TYPE_I32,           /**< 32-bit signed integer */
-    JELLYFISH_FSON_TYPE_I64,           /**< 64-bit signed integer */
-    JELLYFISH_FSON_TYPE_U8,            /**< 8-bit unsigned integer */
-    JELLYFISH_FSON_TYPE_U16,           /**< 16-bit unsigned integer */
-    JELLYFISH_FSON_TYPE_U32,           /**< 32-bit unsigned integer */
-    JELLYFISH_FSON_TYPE_U64,           /**< 64-bit unsigned integer */
-    JELLYFISH_FSON_TYPE_F32,           /**< 32-bit float */
-    JELLYFISH_FSON_TYPE_F64,           /**< 64-bit double */
-
-    /* Literal number bases */
-    JELLYFISH_FSON_TYPE_OCT,           /**< Octal number */
-    JELLYFISH_FSON_TYPE_HEX,           /**< Hexadecimal number */
-    JELLYFISH_FSON_TYPE_BIN,           /**< Binary number */
-
-    /* Strings and chars */
-    JELLYFISH_FSON_TYPE_CHAR,          /**< Single character */
-    JELLYFISH_FSON_TYPE_CSTR,          /**< C-string (heap-owned) */
-
-    /* Composite containers */
-    JELLYFISH_FSON_TYPE_ARRAY,         /**< Array container */
-    JELLYFISH_FSON_TYPE_OBJECT,        /**< Object (key/value map) */
-
-    /* Extended */
-    JELLYFISH_FSON_TYPE_ENUM,          /**< Enum symbol */
-    JELLYFISH_FSON_TYPE_DATETIME,      /**< Date/time value */
-    JELLYFISH_FSON_TYPE_DURATION       /**< Duration value */
-} fossil_ai_jellyfish_fson_type_t;
-
 /* Capacity limits (tunable) */
 enum {
     FOSSIL_JELLYFISH_FSON_MAX_ARRAY  = 32,   /**< Maximum array elements */
@@ -183,75 +139,6 @@ enum {
     FOSSIL_JELLYFISH_PATTERN_EVOLUTION_SIZE = 8,  /**< Pattern evolution array size */
     FOSSIL_JELLYFISH_AUDIT_TRAIL_SIZE = 8,        /**< Audit trail array size */
     FOSSIL_JELLYFISH_TOKEN_PROB_SIZE = FOSSIL_JELLYFISH_MAX_TOKENS
-};
-
-/**
- * @brief Forward declaration for FSON value struct.
- */
-typedef struct fossil_ai_jellyfish_fson_value fossil_ai_jellyfish_fson_value_t;
-
-/**
- * @brief FSON value representation for Jellyfish AI.
- * Supports scalars, arrays, objects, and extended types.
- */
-struct fossil_ai_jellyfish_fson_value {
-    fossil_ai_jellyfish_fson_type_t type; /**< Type of value */
-    uint32_t type_flags;                  /**< Type flags (e.g., read-only, derived, temporary) */
-    uint32_t reference_count;             /**< Reference count for deduplication */
-    uint8_t computed_hash[FOSSIL_JELLYFISH_HASH_SIZE]; /**< Hash for quick equality/tamper detection */
-    union {
-        /* Scalars */
-        int boolean;                      /**< Boolean value */
-        int8_t i8;                        /**< 8-bit signed integer */
-        int16_t i16;                      /**< 16-bit signed integer */
-        int32_t i32;                      /**< 32-bit signed integer */
-        int64_t i64;                      /**< 64-bit signed integer */
-        uint8_t u8;                       /**< 8-bit unsigned integer */
-        uint16_t u16;                     /**< 16-bit unsigned integer */
-        uint32_t u32;                     /**< 32-bit unsigned integer */
-        uint64_t u64;                     /**< 64-bit unsigned integer */
-        float f32;                        /**< 32-bit float */
-        double f64;                       /**< 64-bit double */
-
-        /* Encoded numbers (stored as raw unsigned) */
-        uint64_t oct;                     /**< Octal value */
-        uint64_t hex;                     /**< Hexadecimal value */
-        uint64_t bin;                     /**< Binary value */
-
-        /* Characters and strings */
-        char character;                   /**< Single character */
-        char *cstr;                       /**< Heap-owned C-string */
-
-        /* Enum symbol */
-        struct {
-            char *symbol;                 /**< Chosen symbol */
-            const char **allowed;         /**< Optional allowed set */
-            size_t allowed_count;         /**< Number of allowed symbols */
-        } enum_val;
-
-        /* Date/time (nanoseconds since epoch) */
-        struct {
-            int64_t epoch_ns;             /**< Epoch time in nanoseconds */
-        } datetime;
-
-        /* Duration (nanoseconds) */
-        struct {
-            int64_t ns;                   /**< Duration in nanoseconds */
-        } duration;
-
-        /* Fixed-capacity array */
-        struct {
-            fossil_ai_jellyfish_fson_value_t *items[FOSSIL_JELLYFISH_FSON_MAX_ARRAY]; /**< Array items */
-            size_t count;                  /**< Number of items */
-        } array;
-
-        /* Fixed-capacity object (key/value map) */
-        struct {
-            char keys[FOSSIL_JELLYFISH_FSON_MAX_OBJECT][FOSSIL_JELLYFISH_KEY_SIZE]; /**< Object keys */
-            fossil_ai_jellyfish_fson_value_t *values[FOSSIL_JELLYFISH_FSON_MAX_OBJECT];  /**< Object values */
-            size_t count;                  /**< Number of key/value pairs */
-        } object;
-    } u;
 };
 
 /**
@@ -365,9 +252,6 @@ typedef struct {
     int is_contradicted;                                   /**< 1 if block is contradicted */
     float semantic_conflict_score;                         /**< Contradictory semantic mapping score */
 
-    /* FSON extension: arbitrary semantic metadata (object root) */
-    fossil_ai_jellyfish_fson_value_t semantic_meta;        /**< Semantic metadata (OBJECT or NULL) */
-
     // --- Pattern recognition & comprehension extensions ---
     char matched_pattern_name[64];                         /**< Name/label of matched pattern (if any) */
     char comprehension_note[128];                          /**< Explanation of comprehension (if rapid solution applied) */
@@ -398,9 +282,6 @@ typedef struct {
     int redacted;                                          /**< 1 if redacted */
     int reserved;                                          /**< Reserved for future use */
 
-    /* FSON extension: structured IO annotations (e.g., parse tree, embeddings refs) */
-    fossil_ai_jellyfish_fson_value_t io_meta;              /**< IO metadata (OBJECT or NULL) */
-
     // --- Pattern recognition & comprehension extensions ---
     char pattern_tokens[FOSSIL_JELLYFISH_MAX_TOKENS][FOSSIL_JELLYFISH_TOKEN_SIZE]; /**< Tokens for pattern matching */
     size_t pattern_token_count;                            /**< Number of pattern tokens */
@@ -422,22 +303,11 @@ typedef enum {
     JELLYFISH_ATTACHMENT_OTHER
 } fossil_ai_jellyfish_attachment_type_t;
 
-typedef struct {
-    fossil_ai_jellyfish_fson_value_t root;                 /**< Root object (OBJECT or NULL) */
-    struct {
-        fossil_ai_jellyfish_fson_value_t *attachment;
-        uint8_t derived_from_commit_hash[FOSSIL_JELLYFISH_HASH_SIZE]; /**< Provenance tracking */
-        fossil_ai_jellyfish_attachment_type_t attachment_type;        /**< Type of attachment */
-    } attachments[FOSSIL_JELLYFISH_FSON_MAX_ARRAY];
-    size_t attachment_count;                               /**< Number of attachments */
-} fossil_ai_jellyfish_block_fson_t;
-
 /**
  * @brief Audit Metadata & Compliance
  * Extended for chain-of-evidence and risk tracking.
  */
 typedef struct {
-    fossil_ai_jellyfish_fson_value_t audit_meta_root;      /**< Root object (OBJECT or NULL) */
     uint8_t audit_trail[FOSSIL_JELLYFISH_AUDIT_TRAIL_SIZE][FOSSIL_JELLYFISH_HASH_SIZE]; /**< Hashes of prior audits */
     size_t audit_trail_count;                              /**< Number of audit trail entries */
     char validation_reason[128];                           /**< Reason for validation */
@@ -455,7 +325,6 @@ typedef struct {
     fossil_ai_jellyfish_block_attributes_t attributes;     /**< Block attributes and trust metrics */
     fossil_ai_jellyfish_commit_type_t block_type;          /**< Commit type */
     fossil_ai_jellyfish_block_classification_t classify;   /**< Classification and semantic relationships */
-    fossil_ai_jellyfish_block_fson_t fson;                 /**< Extensible metadata (FSON) */
     fossil_ai_jellyfish_block_audit_meta_t audit_meta;     /**< Per-block audit/validation record (OBJECT) */
 } fossil_ai_jellyfish_block_t;
 
@@ -477,13 +346,9 @@ typedef struct {
     struct {
         char name[64];                                             /**< Branch name */
         uint8_t head_hash[FOSSIL_JELLYFISH_HASH_SIZE];             /**< Head commit hash for branch */
-        fossil_ai_jellyfish_fson_value_t branch_meta;              /**< Branch-level dynamic metadata */
         char branch_reason[128];                                   /**< Reason for branch creation */
     } branches[FOSSIL_JELLYFISH_MAX_BRANCHES];
     size_t branch_count;                                           /**< Number of branches */
-
-    /* Repository-wide metadata (OBJECT root for global settings, stats cache, policies) */
-    fossil_ai_jellyfish_fson_value_t repo_meta;                    /**< Repository metadata (OBJECT root) */
 
     // --- Cross-chain comprehension references ---
     uint8_t cross_chain_ids[FOSSIL_JELLYFISH_MAX_LINKS][FOSSIL_DEVICE_ID_SIZE]; /**< Referenced external chains */
@@ -880,132 +745,6 @@ int fossil_ai_jellyfish_cherry_pick(fossil_ai_jellyfish_chain_t *chain, const ui
  * Returns 1 if added, 0 if duplicate, negative on error.
  */
 int fossil_ai_jellyfish_tag_block(fossil_ai_jellyfish_block_t *block, const char *tag);
-
-/* ------------------------------ FSON Utilities ----------------------------- */
-
-/**
- * Initialize FSON value to NULL type.
- */
-void fossil_ai_jellyfish_fson_init(fossil_ai_jellyfish_fson_value_t *v);
-
-/**
- * Reset (recursively frees owned dynamic strings/children).
- */
-void fossil_ai_jellyfish_fson_reset(fossil_ai_jellyfish_fson_value_t *v);
-
-/**
- * Set C-string (duplicates/owns).
- * Returns 1 if changed, 0 if unchanged, negative on error.
- */
-int  fossil_ai_jellyfish_fson_set_cstr(fossil_ai_jellyfish_fson_value_t *v, const char *s);
-
-/**
- * Set 64-bit integer.
- * Returns 1 if changed, 0 if unchanged, negative on error.
- */
-int  fossil_ai_jellyfish_fson_set_i64(fossil_ai_jellyfish_fson_value_t *v, int64_t val);
-
-/**
- * Set double.
- * Returns 1 if changed, 0 if unchanged, negative on error.
- */
-int  fossil_ai_jellyfish_fson_set_f64(fossil_ai_jellyfish_fson_value_t *v, double val);
-
-/**
- * Set boolean.
- * Returns 1 if changed, 0 if unchanged, negative on error.
- */
-int  fossil_ai_jellyfish_fson_set_bool(fossil_ai_jellyfish_fson_value_t *v, int val);
-
-/**
- * Make object (initial empty map).
- * Returns 1 if changed, 0 if unchanged, negative on error.
- */
-int  fossil_ai_jellyfish_fson_make_object(fossil_ai_jellyfish_fson_value_t *v);
-
-/**
- * Make array.
- * Returns 1 if changed, 0 if unchanged, negative on error.
- */
-int  fossil_ai_jellyfish_fson_make_array(fossil_ai_jellyfish_fson_value_t *v);
-
-/**
- * Put key/value in object (fails if full).
- * Returns 1 if added/replaced, 0 if unchanged, negative on error.
- */
-int  fossil_ai_jellyfish_fson_object_put(fossil_ai_jellyfish_fson_value_t *obj,
-                                      const char *key,
-                                      fossil_ai_jellyfish_fson_value_t *value);
-
-/**
- * Get value by key (returns pointer or NULL).
- */
-fossil_ai_jellyfish_fson_value_t *fossil_ai_jellyfish_fson_object_get(const fossil_ai_jellyfish_fson_value_t *obj,
-                                                                const char *key);
-
-/**
- * Push value to array.
- * Returns 1 if added, negative on error.
- */
-int  fossil_ai_jellyfish_fson_array_push(fossil_ai_jellyfish_fson_value_t *arr,
-                                      fossil_ai_jellyfish_fson_value_t *value);
-
-/**
- * Get array element pointer (or NULL).
- */
-fossil_ai_jellyfish_fson_value_t *fossil_ai_jellyfish_fson_array_get(const fossil_ai_jellyfish_fson_value_t *arr,
-                                                               size_t index);
-
-/**
- * Length of array.
- */
-size_t fossil_ai_jellyfish_fson_array_length(const fossil_ai_jellyfish_fson_value_t *arr);
-
-/**
- * Deep copy subtree.
- * Returns 1 if copied, negative on error.
- */
-int  fossil_ai_jellyfish_fson_copy(const fossil_ai_jellyfish_fson_value_t *src,
-                                fossil_ai_jellyfish_fson_value_t *dst);
-
-/**
- * Free subtree (recursively).
- */
-void fossil_ai_jellyfish_fson_free(fossil_ai_jellyfish_fson_value_t *v);
-
-/* -------------------------- Block FSON Attachments ------------------------- */
-
-/**
- * Set semantic key/value inside block.classify.semantic_meta (OBJECT).
- * Returns 1 if added/replaced, 0 if unchanged, negative on error.
- */
-int fossil_ai_jellyfish_block_set_semantic_kv(fossil_ai_jellyfish_block_t *block,
-                                           const char *key,
-                                           fossil_ai_jellyfish_fson_value_t *value);
-
-/**
- * Add auxiliary attachment to block.fson.attachments.
- * Returns 1 if added, 0 if unchanged, negative on error.
- */
-int fossil_ai_jellyfish_block_add_attachment(fossil_ai_jellyfish_block_t *block,
-                                          fossil_ai_jellyfish_fson_value_t *attachment);
-
-/**
- * Set audit metadata object.
- * Returns 1 if changed, 0 if unchanged, negative on error.
- */
-int fossil_ai_jellyfish_block_set_audit_meta(fossil_ai_jellyfish_block_t *block,
-                                          fossil_ai_jellyfish_fson_value_t *meta);
-
-/* --------------------------- Chain-level FSON Meta ------------------------- */
-
-/**
- * Insert repository-level metadata key/value (OBJECT root).
- * Returns 1 if added/replaced, 0 if unchanged, negative on error.
- */
-int fossil_ai_jellyfish_repo_meta_put(fossil_ai_jellyfish_chain_t *chain,
-                                   const char *key,
-                                   fossil_ai_jellyfish_fson_value_t *value);
 
 /* ---------------------------- Cryptographic Ops --------------------------- */
 
@@ -1478,242 +1217,6 @@ namespace fossil {
             int cherry_pick(const uint8_t* commit_hash) {
                 return ::fossil_ai_jellyfish_cherry_pick(&chain_, commit_hash);
             }
-
-            // ---- FSON helper RAII wrapper ----
-            /**
-            * @class FsonValue
-            * @brief RAII-managed fossil_ai_jellyfish_fson_value_t.
-            *
-            * Copy: deep copy. Move: transfer ownership by struct copy + nulling source.
-            * Provides direct wrappers for primitive mutations and object/array operations.
-            */
-            class FsonValue {
-            public:
-                /**
-                * @brief Construct NULL FSON value.
-                */
-                FsonValue() { ::fossil_ai_jellyfish_fson_init(&v_); }
-
-                /**
-                * @brief Destructor (recursively frees subtree).
-                */
-                ~FsonValue() { ::fossil_ai_jellyfish_fson_free(&v_); }
-
-                /**
-                * @brief Deep copy constructor.
-                */
-                FsonValue(const FsonValue& other) {
-                    ::fossil_ai_jellyfish_fson_init(&v_);
-                    ::fossil_ai_jellyfish_fson_copy(&other.v_, &v_);
-                }
-
-                /**
-                * @brief Deep copy assignment.
-                */
-                FsonValue& operator=(const FsonValue& other) {
-                    if (this != &other) {
-                        ::fossil_ai_jellyfish_fson_free(&v_);
-                        ::fossil_ai_jellyfish_fson_init(&v_);
-                        ::fossil_ai_jellyfish_fson_copy(&other.v_, &v_);
-                    }
-                    return *this;
-                }
-
-                /**
-                * @brief Move constructor (steals internal union state).
-                */
-                FsonValue(FsonValue&& other) noexcept { v_ = other.v_; other.v_.type = JELLYFISH_FSON_TYPE_NULL; }
-
-                /**
-                * @brief Move assignment (frees old, takes new).
-                */
-                FsonValue& operator=(FsonValue&& other) noexcept {
-                    if (this != &other) {
-                        ::fossil_ai_jellyfish_fson_free(&v_);
-                        v_ = other.v_;
-                        other.v_.type = JELLYFISH_FSON_TYPE_NULL;
-                    }
-                    return *this;
-                }
-
-                /**
-                * @brief Set value to owned C-string.
-                */
-                int set_cstr(const char* s) { return ::fossil_ai_jellyfish_fson_set_cstr(&v_, s); }
-
-                /**
-                * @brief Set 64-bit integer scalar.
-                */
-                int set_i64(int64_t x) { return ::fossil_ai_jellyfish_fson_set_i64(&v_, x); }
-
-                /**
-                * @brief Set double scalar.
-                */
-                int set_f64(double d) { return ::fossil_ai_jellyfish_fson_set_f64(&v_, d); }
-
-                /**
-                * @brief Set boolean scalar.
-                */
-                int set_bool(int b) { return ::fossil_ai_jellyfish_fson_set_bool(&v_, b); }
-
-                /**
-                * @brief Convert to object container.
-                */
-                int make_object() { return ::fossil_ai_jellyfish_fson_make_object(&v_); }
-
-                /**
-                * @brief Convert to array container.
-                */
-                int make_array() { return ::fossil_ai_jellyfish_fson_make_array(&v_); }
-
-                /**
-                * @brief Put key/value into object.
-                */
-                int object_put(const char* key, FsonValue& child) {
-                    return ::fossil_ai_jellyfish_fson_object_put(&v_, key, &child.v_);
-                }
-
-                /**
-                * @brief Get child by key.
-                */
-                FsonValue* object_get(const char* key) {
-                    auto* p = ::fossil_ai_jellyfish_fson_object_get(&v_, key);
-                    return reinterpret_cast<FsonValue*>(p);
-                }
-
-                /**
-                * @brief Append child to array.
-                */
-                int array_push(FsonValue& child) {
-                    return ::fossil_ai_jellyfish_fson_array_push(&v_, &child.v_);
-                }
-
-                /**
-                * @brief Get array element pointer.
-                */
-                FsonValue* array_get(size_t idx) {
-                    auto* p = ::fossil_ai_jellyfish_fson_array_get(&v_, idx);
-                    return reinterpret_cast<FsonValue*>(p);
-                }
-
-                /**
-                * @brief Current array length.
-                */
-                size_t array_length() const { return ::fossil_ai_jellyfish_fson_array_length(&v_); }
-
-                /**
-                * @brief Access native pointer (mutable).
-                */
-                fossil_ai_jellyfish_fson_value_t* native() { return &v_; }
-
-                /**
-                * @brief Access native pointer (const).
-                */
-                const fossil_ai_jellyfish_fson_value_t* native() const { return &v_; }
-            private:
-                fossil_ai_jellyfish_fson_value_t v_;
-            };
-
-            // ---- Block FSON attachments ----
-
-            /**
-            * @brief Insert semantic key/value into block classification meta.
-            */
-            static int block_set_semantic_kv(fossil_ai_jellyfish_block_t* block,
-                                            const char* key,
-                                            fossil_ai_jellyfish_fson_value_t* value) {
-                return ::fossil_ai_jellyfish_block_set_semantic_kv(block, key, value);
-            }
-
-            /**
-            * @brief Attach arbitrary FSON node to block attachments list.
-            */
-            static int block_add_attachment(fossil_ai_jellyfish_block_t* block,
-                                            fossil_ai_jellyfish_fson_value_t* attachment) {
-                return ::fossil_ai_jellyfish_block_add_attachment(block, attachment);
-            }
-
-            /**
-            * @brief Set audit metadata object for block.
-            */
-            static int block_set_audit_meta(fossil_ai_jellyfish_block_t* block,
-                                            fossil_ai_jellyfish_fson_value_t* meta) {
-                return ::fossil_ai_jellyfish_block_set_audit_meta(block, meta);
-            }
-
-            // ---- Repo meta ----
-
-            /**
-            * @brief Insert repository-level metadata key/value.
-            */
-            int repo_meta_put(const char* key, fossil_ai_jellyfish_fson_value_t* value) {
-                return ::fossil_ai_jellyfish_repo_meta_put(&chain_, key, value);
-            }
-
-            // ---- Crypto ----
-
-            /**
-            * @brief Sign block.
-            */
-            static int block_sign(fossil_ai_jellyfish_block_t* block, const uint8_t* priv_key) {
-                return ::fossil_ai_jellyfish_block_sign(block, priv_key);
-            }
-
-            /**
-            * @brief Verify block signature.
-            */
-            static bool block_verify_signature(const fossil_ai_jellyfish_block_t* block,
-                                            const uint8_t* pub_key) {
-                return ::fossil_ai_jellyfish_block_verify_signature(block, pub_key);
-            }
-
-            // ---- Tokenization ----
-
-            /**
-            * @brief Tokenize input (lowercase alphanumeric).
-            */
-            size_t tokenize(const char* input,
-                            char tokens[][FOSSIL_JELLYFISH_TOKEN_SIZE],
-                            size_t max_tokens) const {
-                return ::fossil_ai_jellyfish_tokenize(input, tokens, max_tokens);
-            }
-
-            // ---- Utility ----
-
-            /**
-            * @brief Compute age for a block relative to supplied now.
-            */
-            static uint64_t block_age(const fossil_ai_jellyfish_block_t* block, uint64_t now) {
-                return ::fossil_ai_jellyfish_block_age(block, now);
-            }
-
-            /**
-            * @brief Produce concise diagnostic description for block.
-            */
-            static void block_explain(const fossil_ai_jellyfish_block_t* block, char* out, size_t size) {
-                ::fossil_ai_jellyfish_block_explain(block, out, size);
-            }
-
-            /**
-            * @brief Deep clone into destination Jellyfish.
-            */
-            int clone_chain(Jellyfish& dst) const {
-                return ::fossil_ai_jellyfish_clone_chain(&chain_, &dst.chain_);
-            }
-
-            /**
-            * @brief Mutable native chain pointer.
-            */
-            fossil_ai_jellyfish_chain_t* native_chain() { return &chain_; }
-
-            /**
-            * @brief Const native chain pointer.
-            */
-            const fossil_ai_jellyfish_chain_t* native_chain() const { return &chain_; }
-
-        private:
-            fossil_ai_jellyfish_chain_t chain_; /**< Underlying chain storage */
-        };
 
     } // namespace ai
 

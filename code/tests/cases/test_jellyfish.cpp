@@ -610,7 +610,7 @@ FOSSIL_TEST_CASE(cpp_test_jellyfish_clone_chain_copies_all_blocks) {
     src.init();
     dst.init();
     src.learn("clone", "me");
-    int result = dst = src, 0;
+    dst = src;
     const fossil_ai_jellyfish_chain_t &src_chain = *reinterpret_cast<const fossil_ai_jellyfish_chain_t*>(&src);
     const fossil_ai_jellyfish_chain_t &dst_chain = *reinterpret_cast<const fossil_ai_jellyfish_chain_t*>(&dst);
     ASSUME_ITS_EQUAL_I32((int)src_chain.count, (int)dst_chain.count);

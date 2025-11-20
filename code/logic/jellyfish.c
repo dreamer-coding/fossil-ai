@@ -1397,6 +1397,265 @@ int fossil_ai_jellyfish_load(fossil_ai_jellyfish_chain_t *chain, const char *fil
     return 0;
 }
 
+/* --------------------------- Summarization ---------------------------------- */
+
+int fossil_ai_jellyfish_summarize(
+    const fossil_ai_jellyfish_chain_t *chain,
+    char *output,
+    size_t output_size,
+    int depth)
+{
+    return fossil_ai_jellyfish_summarize_ex(
+        chain, output, output_size, depth, 0
+    );
+}
+
+int fossil_ai_jellyfish_summarize_ex(
+    const fossil_ai_jellyfish_chain_t *chain,
+    char *output,
+    size_t output_size,
+    int depth,
+    int include_timestamps)
+{
+    if (!chain || !output || output_size == 0)
+        return -1;
+
+    // Gather stats
+    size_t valid = 0, trusted = 0, immutable = 0, conflicted = 0;
+    float conf_sum = 0.0f, conf_min = 1.0f, conf_max = 0.0f;
+    uint64_t now = get_time_microseconds();
+    uint64_t age_min_us = UINT64_MAX, age_max_us = 0, age_sum_us = 0;
+    unsigned type_hist[JELLY_COMMIT_FINAL + 1] = {0};
+    size_t topic_count = 0;
+    char topics[16][32] = {{0}};
+    size_t topic_freq[16] = {0};
+
+    // Scan blocks
+    for (size_t i = 0; i < chain->count && i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
+        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
+        if (!b->attributes.valid) continue;
+        valid++;
+        float c = b->attributes.confidence;
+        if (c < conf_min) conf_min = c;
+        if (c > conf_max) conf_max = c;
+        conf_sum += c;
+        if (b->attributes.trusted) trusted++;
+        if (b->attributes.immutable) immutable++;
+        if (b->attributes.conflicted) conflicted++;
+        if ((unsigned)b->block_type <= JELLY_COMMIT_FINAL)
+            type_hist[b->block_type]++;
+        uint64_t ts = b->time.timestamp;
+        uint64_t age_us = (now > ts) ? (now - ts) : 0;
+        if (age_us < age_min_us) age_min_us = age_us;
+        if (age_us > age_max_us) age_max_us = age_us;
+        age_sum_us += age_us;
+
+        // Topic extraction: use first token of input as topic
+        if (b->io.input_token_count > 0) {
+            const char *tok = b->io.input_tokens[0];
+            size_t found = 0;
+            for (size_t t = 0; t < topic_count; ++t) {
+                if (strncmp(topics[t], tok, sizeof(topics[t])) == 0) {
+                    topic_freq[t]++;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found && topic_count < 16) {
+                strncpy(topics[topic_count], tok, sizeof(topics[topic_count]) - 1);
+                topic_freq[topic_count] = 1;
+                topic_count++;
+            }
+        }
+    }
+
+    float avg_conf = valid ? (conf_sum / (float)valid) : 0.0f;
+    double avg_age_s = valid ? ((double)age_sum_us / (double)valid / 1e6) : 0.0;
+    double age_min_s = (age_min_us == UINT64_MAX) ? 0.0 : (double)age_min_us / 1e6;
+    double age_max_s = (double)age_max_us / 1e6;
+    double coverage = (double)valid / (double)FOSSIL_JELLYFISH_MAX_MEM;
+
+    // Compose summary
+    size_t w = snprintf(output, output_size,
+        "Chain Summary:\n"
+        "- Entries: %zu\n"
+        "- Valid: %zu (%.2f%% coverage)\n"
+        "- Trusted: %zu\n"
+        "- Immutable: %zu\n"
+        "- Conflicted: %zu\n"
+        "- Confidence: avg=%.3f min=%.3f max=%.3f\n"
+        "- Age: avg=%.2fs min=%.2fs max=%.2fs\n"
+        "- Depth: %d\n",
+        chain->count,
+        valid, coverage * 100.0,
+        trusted,
+        immutable,
+        conflicted,
+        avg_conf, conf_min, conf_max,
+        avg_age_s, age_min_s, age_max_s,
+        depth
+    );
+
+    // Type histogram
+    w += snprintf(output + w, output_size > w ? output_size - w : 0,
+        "- Types:");
+    for (unsigned t = 0; t <= JELLY_COMMIT_FINAL; ++t) {
+        if (type_hist[t]) {
+            const char *type_name = fossil_ai_jellyfish_commit_type_name((fossil_ai_jellyfish_commit_type_t)t);
+            w += snprintf(output + w, output_size > w ? output_size - w : 0,
+                " %s:%u", type_name ? type_name : "?", type_hist[t]);
+        }
+    }
+    w += snprintf(output + w, output_size > w ? output_size - w : 0, "\n");
+
+    // Topics
+    w += snprintf(output + w, output_size > w ? output_size - w : 0,
+        "- Topics:");
+    for (size_t t = 0; t < topic_count; ++t) {
+        w += snprintf(output + w, output_size > w ? output_size - w : 0,
+            " %s(%zu)", topics[t], topic_freq[t]);
+    }
+    w += snprintf(output + w, output_size > w ? output_size - w : 0, "\n");
+
+    // Recent highlights (last N)
+    const size_t HIGHLIGHT_LIMIT = 5;
+    struct highlight {
+        uint64_t ts;
+        size_t idx;
+    } highlights[HIGHLIGHT_LIMIT] = {{0}};
+    size_t hcount = 0;
+    for (size_t i = 0; i < chain->count && i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
+        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
+        if (!b->attributes.valid) continue;
+        if (hcount < HIGHLIGHT_LIMIT) {
+            highlights[hcount].ts = b->time.timestamp;
+            highlights[hcount].idx = i;
+            hcount++;
+        } else {
+            // Find oldest highlight, replace if newer
+            size_t oldest = 0;
+            for (size_t h = 1; h < HIGHLIGHT_LIMIT; ++h)
+                if (highlights[h].ts < highlights[oldest].ts)
+                    oldest = h;
+            if (b->time.timestamp > highlights[oldest].ts) {
+                highlights[oldest].ts = b->time.timestamp;
+                highlights[oldest].idx = i;
+            }
+        }
+    }
+    // Sort highlights by timestamp descending
+    for (size_t i = 0; i < hcount; ++i) {
+        for (size_t j = i + 1; j < hcount; ++j) {
+            if (highlights[j].ts > highlights[i].ts) {
+                struct highlight tmp = highlights[i];
+                highlights[i] = highlights[j];
+                highlights[j] = tmp;
+            }
+        }
+    }
+    w += snprintf(output + w, output_size > w ? output_size - w : 0,
+        "- Recent Highlights:\n");
+    for (size_t h = 0; h < hcount; ++h) {
+        const fossil_ai_jellyfish_block_t *b = &chain->commits[highlights[h].idx];
+        char in[33], outv[33];
+        strncpy(in, b->io.input, 32); in[32] = '\0';
+        strncpy(outv, b->io.output, 32); outv[32] = '\0';
+        if (include_timestamps) {
+            w += snprintf(output + w, output_size > w ? output_size - w : 0,
+                "  #%04u [%llu] conf=%.2f type=%s\n    I:\"%s\"\n    O:\"%s\"\n",
+                b->identity.commit_index,
+                (unsigned long long)b->time.timestamp,
+                b->attributes.confidence,
+                fossil_ai_jellyfish_commit_type_name(b->block_type),
+                in, outv);
+        } else {
+            w += snprintf(output + w, output_size > w ? output_size - w : 0,
+                "  #%04u conf=%.2f type=%s\n    I:\"%s\"\n    O:\"%s\"\n",
+                b->identity.commit_index,
+                b->attributes.confidence,
+                fossil_ai_jellyfish_commit_type_name(b->block_type),
+                in, outv);
+        }
+    }
+
+    // Dependency arcs (parent relationships)
+    w += snprintf(output + w, output_size > w ? output_size - w : 0,
+        "- Dependency Arcs:\n");
+    size_t arc_count = 0;
+    for (size_t i = 0; i < chain->count && i < FOSSIL_JELLYFISH_MAX_MEM && arc_count < 8; ++i) {
+        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
+        if (!b->attributes.valid) continue;
+        if (b->identity.parent_count == 0) continue;
+        w += snprintf(output + w, output_size > w ? output_size - w : 0,
+            "  #%04u <-", b->identity.commit_index);
+        for (size_t p = 0; p < b->identity.parent_count && p < 4; ++p) {
+            w += snprintf(output + w, output_size > w ? output_size - w : 0,
+                " [%02X%02X%02X%02X]", b->identity.parent_hashes[p][0],
+                                      b->identity.parent_hashes[p][1],
+                                      b->identity.parent_hashes[p][2],
+                                      b->identity.parent_hashes[p][3]);
+        }
+        w += snprintf(output + w, output_size > w ? output_size - w : 0, "\n");
+        arc_count++;
+    }
+
+    // Named entities (from tags)
+    w += snprintf(output + w, output_size > w ? output_size - w : 0,
+        "- Named Entities (tags):");
+    size_t entity_count = 0;
+    for (size_t i = 0; i < chain->count && i < FOSSIL_JELLYFISH_MAX_MEM && entity_count < 16; ++i) {
+        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
+        if (!b->attributes.valid) continue;
+        for (size_t t = 0; t < FOSSIL_JELLYFISH_MAX_TAGS; ++t) {
+            if (b->classify.tags[t][0]) {
+                w += snprintf(output + w, output_size > w ? output_size - w : 0,
+                    " %s", b->classify.tags[t]);
+                entity_count++;
+                if (entity_count >= 16) break;
+            }
+        }
+        if (entity_count >= 16) break;
+    }
+    w += snprintf(output + w, output_size > w ? output_size - w : 0, "\n");
+
+    // Chronological segments
+    if (include_timestamps) {
+        w += snprintf(output + w, output_size > w ? output_size - w : 0,
+            "- Chronological Segments:\n");
+        uint64_t seg_size = 60000000ULL; // 60s
+        uint64_t seg_start = 0;
+        size_t seg_valid = 0;
+        for (size_t i = 0; i < chain->count && i < FOSSIL_JELLYFISH_MAX_MEM; ++i) {
+            const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
+            if (!b->attributes.valid) continue;
+            if (seg_start == 0) seg_start = b->time.timestamp;
+            if (b->time.timestamp - seg_start > seg_size) {
+                w += snprintf(output + w, output_size > w ? output_size - w : 0,
+                    "  Segment [%llu - %llu]: %zu entries\n",
+                    (unsigned long long)seg_start,
+                    (unsigned long long)b->time.timestamp,
+                    seg_valid);
+                seg_start = b->time.timestamp;
+                seg_valid = 0;
+            }
+            seg_valid++;
+        }
+        if (seg_valid > 0) {
+            w += snprintf(output + w, output_size > w ? output_size - w : 0,
+                "  Segment [%llu - %llu]: %zu entries\n",
+                (unsigned long long)seg_start,
+                (unsigned long long)(seg_start + seg_size),
+                seg_valid);
+        }
+    }
+
+    // Truncate output if needed
+    if (w >= output_size)
+        output[output_size - 1] = '\0';
+
+    return 0;
+}
+
 /* ----------------------------- Maintenance --------------------------------- */
 
 void fossil_ai_jellyfish_cleanup(fossil_ai_jellyfish_chain_t *chain) {

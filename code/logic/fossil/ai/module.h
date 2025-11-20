@@ -27,326 +27,300 @@
 
 #include "jellyfish.h"
 
+#define FOSSIL_AI_MODULE_MAX_NAME 64
+#define FOSSIL_AI_MODULE_MAX_MODULES 64
+
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-/**
- * ============================================================================
- * Module Types & Capabilities
- * ============================================================================
- */
+typedef struct fossil_ai_module fossil_ai_module_t;
 
 /**
- * @enum fossil_ai_module_type_t
- * @brief Enumerates the types of AI modules supported by Fossil Logic.
+ * Primary function pointer for module execution.
+ * Modules can perform AI reasoning using `persistent_mem`.
  *
- * Each type describes the primary role of the module within the system.
+ * Returns 0 on success, non-zero on error.
  */
-typedef enum {
-    FOSSIL_AI_MODULE_UNKNOWN      = 0, /**< Unknown or unspecified module type */
-    FOSSIL_AI_MODULE_ANALYZER     = 1, /**< Reads commits, provides metrics/flags */
-    FOSSIL_AI_MODULE_TRANSFORMER  = 2, /**< Rewrites/modifies commits (PATCH, REBASE) */
-    FOSSIL_AI_MODULE_REASONER     = 3, /**< Enhances fossil_ai_jellyfish_reason() */
-    FOSSIL_AI_MODULE_CLASSIFIER   = 4, /**< Writes tags, similarity, metadata */
-    FOSSIL_AI_MODULE_OBSERVER     = 5, /**< Watches chain events and logs */
-    FOSSIL_AI_MODULE_TOOL         = 6, /**< General-purpose AI extension */
-    FOSSIL_AI_MODULE_SECURITY     = 7, /**< Validation, scanning, integrity checks */
-    FOSSIL_AI_MODULE_STORAGE      = 8  /**< Custom persistence, indexing, caching */
-} fossil_ai_module_type_t;
+typedef int (*fossil_ai_module_fn)(
+    const char *input,                       // Input string for reasoning
+    char *output,                            // Output buffer for result
+    size_t output_size,                      // Size of output buffer
+    fossil_ai_jellyfish_chain_t *persistent_mem // Persistent memory chain for module state
+);
 
 /**
- * @enum fossil_ai_module_cap_t
- * @brief Bitmask flags describing module capabilities.
- *
- * Capabilities determine which hooks and operations a module can perform.
+ * Optional: called when a module is first loaded or registered.
+ * Used for initialization tasks.
  */
-typedef enum {
-    FOSSIL_AI_MODULE_CAP_NONE          = 0,        /**< No capabilities */
-    FOSSIL_AI_MODULE_CAP_READ          = 1 << 0,   /**< Can read chain/commits */
-    FOSSIL_AI_MODULE_CAP_WRITE         = 1 << 1,   /**< Can write/modify commits */
-    FOSSIL_AI_MODULE_CAP_INTERCEPT_IO  = 1 << 2,   /**< Can intercept input/output */
-    FOSSIL_AI_MODULE_CAP_REASON_HOOK   = 1 << 3,   /**< Can hook into reasoning */
-    FOSSIL_AI_MODULE_CAP_COMMIT_HOOK   = 1 << 4,   /**< Can hook into commit events */
-    FOSSIL_AI_MODULE_CAP_FSON_ACCESS   = 1 << 5,   /**< Can access FSON config/data */
-    FOSSIL_AI_MODULE_CAP_SECURITY      = 1 << 6    /**< Can perform security checks */
-} fossil_ai_module_cap_t;
+typedef int (*fossil_ai_module_on_load_fn)(fossil_ai_module_t *module);
 
 /**
- * ============================================================================
- * Module Lifecycle Structure
- * ============================================================================
+ * Optional: called before a module is deleted or replaced.
+ * Used for cleanup tasks.
  */
+typedef int (*fossil_ai_module_on_unload_fn)(fossil_ai_module_t *module);
 
 /**
- * @struct fossil_ai_module
- * @brief Represents a single AI module and its lifecycle/event hooks.
- *
- * This structure contains metadata, configuration, and function pointers
- * for lifecycle management and event interception.
+ * Model interface: one-shot prompt/response.
+ * Used for direct question-answering.
  */
-typedef struct fossil_ai_module {
-
-    char     name[64];        /**< Module name (unique identifier) */
-    char     version[32];     /**< Module version string */
-    char     author[64];      /**< Module author string */
-
-    fossil_ai_module_type_t type;    /**< Module type (see fossil_ai_module_type_t) */
-    uint32_t capabilities;           /**< Bitmask of fossil_ai_module_cap_t */
-
-    int active;              /**< Nonzero if module is currently running */
-    int loaded;              /**< Nonzero if module is loaded into registry */
-
-    /**
-     * @brief Optional FSON config root for module settings.
-     * Used to store module-specific configuration data.
-     */
-    fossil_ai_jellyfish_fson_value_t config;
-
-    // --------------------------------------------
-    // Lifecycle handlers
-    // --------------------------------------------
-
-    /**
-     * @brief Called when module first loads.
-     * @param m Pointer to this module.
-     * @return 0 on success, nonzero on error.
-     */
-    int (*on_load)(struct fossil_ai_module *m);
-
-    /**
-     * @brief Called when attaching to a Jellyfish chain.
-     * @param m Pointer to this module.
-     * @param chain Pointer to Jellyfish chain.
-     * @return 0 on success, nonzero on error.
-     */
-    int (*on_init_chain)(struct fossil_ai_module *m, fossil_ai_jellyfish_chain_t *chain);
-
-    /**
-     * @brief Called before shutdown/unload.
-     * @param m Pointer to this module.
-     * @return 0 on success, nonzero on error.
-     */
-    int (*on_unload)(struct fossil_ai_module *m);
-
-    // --------------------------------------------
-    // Event hooks (optional)
-    // --------------------------------------------
-
-    /**
-     * @brief Called after any commit is added.
-     * @param m Pointer to this module.
-     * @param chain Pointer to Jellyfish chain.
-     * @param block Pointer to Jellyfish block.
-     * @return 0 on success, nonzero on error.
-     */
-    int (*on_commit)(
-        struct fossil_ai_module *m,
-        fossil_ai_jellyfish_chain_t *chain,
-        fossil_ai_jellyfish_block_t *block);
-
-    /**
-     * @brief Pre-IO interception: modify or inspect input/output BEFORE commit creation.
-     * @param m Pointer to this module.
-     * @param inout_input Input string (modifiable).
-     * @param inout_output Output string (modifiable).
-     * @return 0 on success, nonzero on error.
-     */
-    int (*on_intercept_io)(
-        struct fossil_ai_module *m,
-        char *inout_input,
-        char *inout_output);
-
-    /**
-     * @brief Intercepts reasoning results.
-     * @param m Pointer to this module.
-     * @param input Input string.
-     * @param inout_output Output string (modifiable).
-     * @param inout_confidence Confidence value (modifiable).
-     * @return 0 on success, nonzero on error.
-     */
-    int (*on_reason)(
-        struct fossil_ai_module *m,
-        const char *input,
-        char *inout_output,
-        float *inout_confidence);
-
-    /**
-     * @brief Periodic maintenance hook (optional).
-     * @param m Pointer to this module.
-     * @param chain Pointer to Jellyfish chain.
-     * @return 0 on success, nonzero on error.
-     */
-    int (*on_maintenance)(
-        struct fossil_ai_module *m,
-        fossil_ai_jellyfish_chain_t *chain);
-
-    /**
-     * @brief Optional: module-specific context pointer.
-     * Used for storing user-defined data.
-     */
-    void *user_context;
-
-} fossil_ai_module_t;
+typedef int (*fossil_ai_model_ask_fn)(
+    fossil_ai_module_t *module,              // Module instance
+    const char *prompt,                      // Prompt string
+    char *output,                            // Output buffer
+    size_t output_size                       // Output buffer size
+);
 
 /**
- * ============================================================================
+ * Model interface: stateful conversation.
+ * Used for multi-turn chat scenarios.
+ */
+typedef int (*fossil_ai_model_chat_fn)(
+    fossil_ai_module_t *module,              // Module instance
+    const char *input,                       // Input string
+    char *output,                            // Output buffer
+    size_t output_size,                      // Output buffer size
+    fossil_ai_jellyfish_chain_t *conversation_chain // Conversation state chain
+);
+
+/**
+ * Model interface: summarize or compress a dataset.
+ * Used for generating summaries or extracting key info.
+ */
+typedef int (*fossil_ai_model_summary_fn)(
+    fossil_ai_module_t *module,              // Module instance
+    fossil_ai_jellyfish_chain_t *target_chain, // Target data chain
+    char *output,                            // Output buffer
+    size_t output_size,                      // Output buffer size
+    int depth,                               // Summary depth/level
+    int include_timestamps                   // Whether to include timestamps
+);
+
+/**
+ * Optional: periodic tick/update event (AI agents, monitors, daemons).
+ * Called by a scheduler or event loop.
+ */
+typedef int (*fossil_ai_module_tick_fn)(
+    fossil_ai_module_t *module,              // Module instance
+    uint64_t tick_count,                     // Global tick counter
+    double dt_seconds                        // Delta time in seconds
+);
+
+/**
+ * Optional logging/debug callback.
+ * Used for custom logging or debugging output.
+ */
+typedef void (*fossil_ai_module_log_fn)(
+    fossil_ai_module_t *module,              // Module instance
+    const char *message                      // Log message
+);
+
+/**
+ * Extended AI Module Metadata & State
+ * Represents a single AI module with execution logic, lifecycle hooks,
+ * persistent memory, configuration, and optional model interfaces.
+ */
+struct fossil_ai_module {
+    char name[FOSSIL_AI_MODULE_MAX_NAME];    // Module name (unique identifier)
+    char version[16];                        // Module version string
+    int active;                              // Active/running flag
+
+    fossil_ai_module_fn execute;             // Main execution function
+
+    fossil_ai_module_on_load_fn   on_load;   // Called when module is loaded
+    fossil_ai_module_on_unload_fn on_unload; // Called before module is unloaded
+    fossil_ai_module_tick_fn      on_tick;   // Periodic tick/update callback
+
+    fossil_ai_jellyfish_chain_t persistent_mem; // Persistent memory chain
+
+    /* Model interface functions */
+    fossil_ai_model_ask_fn     ask_fn;     // One-shot prompt/response
+    fossil_ai_model_chat_fn    chat_fn;    // Stateful conversation
+    fossil_ai_model_summary_fn summary_fn; // Summaries/dataset compression
+
+    /* Configuration key-value pairs */
+    char config_keys[32][64];               // Config keys
+    char config_values[32][256];            // Config values
+    size_t config_count;                    // Number of config entries
+
+    uint64_t capabilities;                  // Capability flags (bitmask)
+
+    char scratch[1024];                     // Scratch buffer for temporary data
+
+    fossil_ai_module_log_fn log_fn;         // Optional logging callback
+    void *sandbox;                          // Optional sandbox memory/region
+    size_t sandbox_size;                    // Size of sandbox region
+};
+
+/**
  * Module Registry
- * ============================================================================
- */
-
-/**
- * @def FOSSIL_AI_MODULE_MAX
- * @brief Maximum number of modules supported in a registry.
- */
-#define FOSSIL_AI_MODULE_MAX 32
-
-/**
- * @struct fossil_ai_module_registry_t
- * @brief Registry for managing loaded AI modules.
- *
- * Contains an array of module pointers and a count of active modules.
+ * Holds all registered AI modules and manages global lifecycle/events.
  */
 typedef struct {
-    fossil_ai_module_t *modules[FOSSIL_AI_MODULE_MAX]; /**< Array of module pointers */
-    size_t count;                                     /**< Number of modules loaded */
+    fossil_ai_module_t modules[FOSSIL_AI_MODULE_MAX_MODULES]; /**< Array of registered modules */
+    size_t count;                                             /**< Number of modules currently registered */
+
+    uint64_t tick_count;                                      /**< Registry-level tick counter for scheduling/events */
+
+    fossil_ai_module_log_fn global_log_fn;                    /**< Optional global logging callback for all modules */
 } fossil_ai_module_registry_t;
 
-/**
- * ============================================================================
- * Global Registry Operations
- * ============================================================================
- */
+/* ------------------------ Registry Operations ----------------------------- */
 
 /**
- * Create a new AI module with default values.
- * Allocates heap memory for the module.
+ * @brief Initialize the module registry.
+ * Clears all registered modules and resets counters.
  *
- * @param name Name of the module (required)
- * @param version Module version string
- * @param author Module author
- * @param type Module type from fossil_ai_module_type_t
- * @param capabilities Bitmask from fossil_ai_module_cap_t
- * @return Pointer to allocated module, or NULL on error
+ * @param registry Pointer to module registry.
  */
-fossil_ai_module_t *fossil_ai_module_create(
+void fossil_ai_module_registry_init(fossil_ai_module_registry_t *registry);
+
+/**
+ * @brief Register a new module.
+ * Adds a module with the given name and execution function.
+ *
+ * @param registry Pointer to module registry.
+ * @param name Unique module name.
+ * @param execute Function pointer for module execution.
+ * @return Index of registered module on success, -1 if registry is full.
+ */
+int fossil_ai_module_register(
+    fossil_ai_module_registry_t *registry,
     const char *name,
-    const char *version,
-    const char *author,
-    fossil_ai_module_type_t type,
-    uint32_t capabilities);
+    fossil_ai_module_fn execute
+);
 
 /**
- * Destroy a module created with fossil_ai_module_create().
- * Does NOT unload from registry — caller must unregister first.
- */
-void fossil_ai_module_destroy(fossil_ai_module_t *module);
-
-/**
- * @brief Initialize module system registry.
- * @param reg Pointer to module registry.
- */
-void fossil_ai_module_registry_init(fossil_ai_module_registry_t *reg);
-
-/**
- * @brief Load module into registry (does not activate yet).
- * @param reg Pointer to module registry.
- * @param module Pointer to module to load.
- * @return 0 on success, nonzero on error.
- */
-int fossil_ai_module_load(fossil_ai_module_registry_t *reg, fossil_ai_module_t *module);
-
-/**
- * @brief Unload module from registry.
- * @param reg Pointer to module registry.
- * @param module_name Name of module to unload.
- * @return 0 on success, nonzero on error.
- */
-int fossil_ai_module_unload(fossil_ai_module_registry_t *reg, const char *module_name);
-
-/**
- * @brief Activate module (calls on_load, marks active).
- * @param reg Pointer to module registry.
- * @param module_name Name of module to activate.
- * @return 0 on success, nonzero on error.
- */
-int fossil_ai_module_start(fossil_ai_module_registry_t *reg, const char *module_name);
-
-/**
- * @brief Deactivate module (calls on_unload).
- * @param reg Pointer to module registry.
- * @param module_name Name of module to deactivate.
- * @return 0 on success, nonzero on error.
- */
-int fossil_ai_module_stop(fossil_ai_module_registry_t *reg, const char *module_name);
-
-/**
- * @brief Find module by name.
- * @param reg Pointer to module registry.
- * @param module_name Name of module to find.
- * @return Pointer to found module, or NULL if not found.
- */
-fossil_ai_module_t *fossil_ai_module_find(
-    fossil_ai_module_registry_t *reg, const char *module_name);
-
-/**
- * @brief Broadcast maintenance call to all modules.
- * @param reg Pointer to module registry.
- * @param chain Pointer to Jellyfish chain.
- */
-void fossil_ai_module_maintenance_all(
-    fossil_ai_module_registry_t *reg, fossil_ai_jellyfish_chain_t *chain);
-
-/**
- * ============================================================================
- * Integration Hooks to Jellyfish AI
- * ============================================================================
+ * @brief Unregister a module by name.
+ * Removes the module from the registry.
  *
- * These functions are intended to be called inside Jellyfish operations.
+ * @param registry Pointer to module registry.
+ * @param name Module name to unregister.
+ * @return 0 on success, non-zero on error.
  */
+int fossil_ai_module_unregister(fossil_ai_module_registry_t *registry, const char *name);
 
 /**
- * @brief After commit creation, call commit hooks for all modules.
- * @param reg Pointer to module registry.
- * @param chain Pointer to Jellyfish chain.
- * @param block Pointer to Jellyfish block.
+ * @brief Retrieve a module by name.
+ *
+ * @param registry Pointer to module registry.
+ * @param name Module name to look up.
+ * @return Pointer to module if found, NULL otherwise.
  */
-void fossil_ai_module_hook_commit(
-    fossil_ai_module_registry_t *reg,
-    fossil_ai_jellyfish_chain_t *chain,
-    fossil_ai_jellyfish_block_t *block);
+fossil_ai_module_t *fossil_ai_module_get(fossil_ai_module_registry_t *registry, const char *name);
+
+/* ------------------------ Module Execution ------------------------------- */
 
 /**
- * @brief Before commit creation (input/output interception).
- * Calls IO interception hooks for all modules.
- * @param reg Pointer to module registry.
- * @param input Input string (modifiable).
- * @param output Output string (modifiable).
+ * @brief Execute a registered module by name.
+ * Calls the module's execute function.
+ *
+ * @param registry Pointer to module registry.
+ * @param name Module name.
+ * @param input Input string for execution.
+ * @param output Output buffer for result.
+ * @param output_size Size of output buffer.
+ * @return 0 on success, non-zero on error.
  */
-void fossil_ai_module_hook_intercept_io(
-    fossil_ai_module_registry_t *reg,
-    char *input,
-    char *output);
-
-/**
- * @brief After Jellyfish reason() picks an output, call reason hooks for all modules.
- * @param reg Pointer to module registry.
- * @param input Input string.
- * @param inout_output Output string (modifiable).
- * @param inout_confidence Confidence value (modifiable).
- */
-void fossil_ai_module_hook_reason(
-    fossil_ai_module_registry_t *reg,
+int fossil_ai_module_execute(
+    fossil_ai_module_registry_t *registry,
+    const char *name,
     const char *input,
-    char *inout_output,
-    float *inout_confidence);
+    char *output,
+    size_t output_size
+);
+
+/* ------------------------ Persistence ----------------------------------- */
 
 /**
- * @brief Print module registry state to stdout.
- * @param reg Pointer to module registry.
+ * @brief Save module persistent memory to file.
+ *
+ * @param module Pointer to module.
+ * @param filepath Path to file for saving.
+ * @return 0 on success, non-zero on error.
  */
-void fossil_ai_module_dump(const fossil_ai_module_registry_t *reg);
+int fossil_ai_module_save(const fossil_ai_module_t *module, const char *filepath);
+
+/**
+ * @brief Load module persistent memory from file.
+ *
+ * @param module Pointer to module.
+ * @param filepath Path to file for loading.
+ * @return 0 on success, non-zero on error.
+ */
+int fossil_ai_module_load(fossil_ai_module_t *module, const char *filepath);
+
+/* ------------------------ Introspection --------------------------------- */
+
+/**
+ * @brief List all active modules in the registry.
+ *
+ * @param registry Pointer to module registry.
+ */
+void fossil_ai_module_list(const fossil_ai_module_registry_t *registry);
+
+/**
+ * @brief Reflect on a module.
+ * Summarizes persistent memory statistics and metadata.
+ *
+ * @param module Pointer to module.
+ */
+void fossil_ai_module_reflect(const fossil_ai_module_t *module);
+
+/**
+ * @brief One-shot prompt/response interface for AI models.
+ * Calls the module's ask_fn if available.
+ *
+ * @param module Pointer to AI module.
+ * @param prompt Input prompt string.
+ * @param output Output buffer for response.
+ * @param output_size Size of output buffer.
+ * @return 0 on success, non-zero on error.
+ */
+int fossil_ai_model_ask(
+    fossil_ai_module_t *module,
+    const char *prompt,
+    char *output,
+    size_t output_size);
+
+/**
+ * @brief Stateful conversation interface for AI models.
+ * Calls the module's chat_fn if available.
+ *
+ * @param module Pointer to AI module.
+ * @param input Input string for conversation.
+ * @param output Output buffer for response.
+ * @param output_size Size of output buffer.
+ * @param ctx Pointer to conversation state chain.
+ * @return 0 on success, non-zero on error.
+ */
+int fossil_ai_model_chat(
+    fossil_ai_module_t *module,
+    const char *input,
+    char *output,
+    size_t output_size,
+    fossil_ai_jellyfish_chain_t *ctx);
+
+/**
+ * @brief Summarize or compress a dataset using the module's summary_fn.
+ *
+ * @param module Pointer to AI module.
+ * @param chain Target data chain to summarize.
+ * @param output Output buffer for summary.
+ * @param output_size Size of output buffer.
+ * @param depth Summary depth/level.
+ * @param timestamps Whether to include timestamps in summary.
+ * @return 0 on success, non-zero on error.
+ */
+int fossil_ai_model_summary(
+    fossil_ai_module_t *module,
+    fossil_ai_jellyfish_chain_t *chain,
+    char *output,
+    size_t output_size,
+    int depth,
+    int timestamps);
 
 #ifdef __cplusplus
 }
@@ -365,117 +339,104 @@ namespace fossil {
         class Module {
         public:
             /**
-             * @brief Construct a Module wrapper from a fossil_ai_module_t pointer.
+             * @brief Construct a Module wrapper for a given fossil_ai_module_t pointer.
              * @param mod Pointer to fossil_ai_module_t.
              */
             Module(fossil_ai_module_t *mod) : module_(mod) {}
 
-            /** @brief Get module name. */
+            /**
+             * @brief Get the module's name.
+             * @return Module name string.
+             */
             const char* name() const { return module_->name; }
-            /** @brief Get module version string. */
-            const char* version() const { return module_->version; }
-            /** @brief Get module author string. */
-            const char* author() const { return module_->author; }
-            /** @brief Get module type (enum fossil_ai_module_type_t). */
-            fossil_ai_module_type_t type() const { return module_->type; }
-            /** @brief Get module capabilities bitmask. */
-            uint32_t capabilities() const { return module_->capabilities; }
-            /** @brief Returns true if module is active (running). */
+
+            /**
+             * @brief Check if the module is active.
+             * @return True if active, false otherwise.
+             */
             bool is_active() const { return module_->active != 0; }
-            /** @brief Returns true if module is loaded in registry. */
-            bool is_loaded() const { return module_->loaded != 0; }
 
             /**
-             * @brief Call module's on_load handler if present.
-             * @return Handler return value or 0 if not present.
-             */
-            int on_load() {
-            if (module_->on_load)
-                return module_->on_load(module_);
-            return 0;
-            }
-
-            /**
-             * @brief Call module's on_init_chain handler if present.
-             * @param chain Pointer to Jellyfish chain.
-             * @return Handler return value or 0 if not present.
-             */
-            int on_init_chain(fossil_ai_jellyfish_chain_t *chain) {
-            if (module_->on_init_chain)
-                return module_->on_init_chain(module_, chain);
-            return 0;
-            }
-
-            /**
-             * @brief Call module's on_unload handler if present.
-             * @return Handler return value or 0 if not present.
-             */
-            int on_unload() {
-            if (module_->on_unload)
-                return module_->on_unload(module_);
-            return 0;
-            }
-
-            /**
-             * @brief Call module's on_commit event hook if present.
-             * @param chain Pointer to Jellyfish chain.
-             * @param block Pointer to Jellyfish block.
-             * @return Handler return value or 0 if not present.
-             */
-            int on_commit(fossil_ai_jellyfish_chain_t *chain, fossil_ai_jellyfish_block_t *block) {
-            if (module_->on_commit)
-                return module_->on_commit(module_, chain, block);
-            return 0;
-            }
-
-            /**
-             * @brief Call module's on_intercept_io event hook if present.
-             * Allows inspection/modification of input/output before commit creation.
-             * @param inout_input Input string (modifiable).
-             * @param inout_output Output string (modifiable).
-             * @return Handler return value or 0 if not present.
-             */
-            int on_intercept_io(char *inout_input, char *inout_output) {
-            if (module_->on_intercept_io)
-                return module_->on_intercept_io(module_, inout_input, inout_output);
-            return 0;
-            }
-
-            /**
-             * @brief Call module's on_reason event hook if present.
-             * Allows interception of reasoning results.
+             * @brief Execute the module's main function.
              * @param input Input string.
-             * @param inout_output Output string (modifiable).
-             * @param inout_confidence Confidence value (modifiable).
-             * @return Handler return value or 0 if not present.
+             * @param output Output buffer.
+             * @param output_size Size of output buffer.
+             * @param chain Persistent memory chain.
+             * @return 0 on success, non-zero on error.
              */
-            int on_reason(const char *input, char *inout_output, float *inout_confidence) {
-            if (module_->on_reason)
-                return module_->on_reason(module_, input, inout_output, inout_confidence);
-            return 0;
+            int execute(const char *input, char *output, size_t output_size, fossil_ai_jellyfish_chain_t *chain) {
+            if (module_->execute)
+                return module_->execute(input, output, output_size, chain);
+            return -1;
             }
 
             /**
-             * @brief Call module's on_maintenance event hook if present.
-             * Used for periodic maintenance tasks.
-             * @param chain Pointer to Jellyfish chain.
-             * @return Handler return value or 0 if not present.
+             * @brief Access the module's persistent memory chain.
+             * @return Reference to persistent memory chain.
              */
-            int on_maintenance(fossil_ai_jellyfish_chain_t *chain) {
-            if (module_->on_maintenance)
-                return module_->on_maintenance(module_, chain);
-            return 0;
+            fossil_ai_jellyfish_chain_t& persistent_mem() { return module_->persistent_mem; }
+            const fossil_ai_jellyfish_chain_t& persistent_mem() const { return module_->persistent_mem; }
+
+            /**
+             * @brief Save the module's persistent memory to a file.
+             * @param filepath Path to save file.
+             * @return 0 on success, non-zero on error.
+             */
+            int save(const std::string &filepath) const {
+            return fossil_ai_module_save(module_, filepath.c_str());
             }
 
-            /** @brief Get module-specific user context pointer. */
-            void* user_context() const { return module_->user_context; }
-            /** @brief Set module-specific user context pointer. */
-            void set_user_context(void* ctx) { module_->user_context = ctx; }
+            /**
+             * @brief Load the module's persistent memory from a file.
+             * @param filepath Path to load file.
+             * @return 0 on success, non-zero on error.
+             */
+            int load(const std::string &filepath) {
+            return fossil_ai_module_load(module_, filepath.c_str());
+            }
 
-            /** @brief Access module configuration (FSON value, mutable). */
-            fossil_ai_jellyfish_fson_value_t& config() { return module_->config; }
-            /** @brief Access module configuration (FSON value, const). */
-            const fossil_ai_jellyfish_fson_value_t& config() const { return module_->config; }
+            /**
+             * @brief Reflect on the module's metadata and persistent memory.
+             */
+            void reflect() const {
+            fossil_ai_module_reflect(module_);
+            }
+
+            /**
+             * @brief One-shot prompt/response interface for AI models.
+             * @param prompt Input prompt string.
+             * @param output Output buffer.
+             * @param output_size Size of output buffer.
+             * @return 0 on success, non-zero on error.
+             */
+            int ask(const char *prompt, char *output, size_t output_size) {
+            return fossil_ai_model_ask(module_, prompt, output, output_size);
+            }
+
+            /**
+             * @brief Stateful conversation interface for AI models.
+             * @param input Input string.
+             * @param output Output buffer.
+             * @param output_size Size of output buffer.
+             * @param ctx Conversation state chain.
+             * @return 0 on success, non-zero on error.
+             */
+            int chat(const char *input, char *output, size_t output_size, fossil_ai_jellyfish_chain_t *ctx) {
+            return fossil_ai_model_chat(module_, input, output, output_size, ctx);
+            }
+
+            /**
+             * @brief Summarize or compress a dataset using the module's summary_fn.
+             * @param chain Target data chain.
+             * @param output Output buffer.
+             * @param output_size Size of output buffer.
+             * @param depth Summary depth/level.
+             * @param timestamps Whether to include timestamps.
+             * @return 0 on success, non-zero on error.
+             */
+            int summary(fossil_ai_jellyfish_chain_t *chain, char *output, size_t output_size, int depth, int timestamps) {
+            return fossil_ai_model_summary(module_, chain, output, output_size, depth, timestamps);
+            }
 
         public:
             fossil_ai_module_t *module_; /**< Underlying C module pointer */
@@ -488,94 +449,68 @@ namespace fossil {
         class ModuleRegistry {
         public:
             /**
-             * @brief Construct a ModuleRegistry wrapper from a fossil_ai_module_registry_t pointer.
+             * @brief Construct a ModuleRegistry wrapper for a given fossil_ai_module_registry_t pointer.
              * @param reg Pointer to fossil_ai_module_registry_t.
              */
             ModuleRegistry(fossil_ai_module_registry_t *reg) : registry_(reg) {}
 
-            /** @brief Initialize the module registry. */
+            /**
+             * @brief Initialize the module registry.
+             */
             void init() { fossil_ai_module_registry_init(registry_); }
 
             /**
-             * @brief Load a module into the registry (does not activate).
-             * @param mod Module wrapper.
-             * @return 0 on success, nonzero on error.
+             * @brief Register a new module.
+             * @param name Unique module name.
+             * @param execute Function pointer for module execution.
+             * @return Index of registered module on success, -1 if registry is full.
              */
-            int load(Module &mod) { return fossil_ai_module_load(registry_, mod.module_); }
+            int register_module(const std::string &name, fossil_ai_module_fn execute) {
+            return fossil_ai_module_register(registry_, name.c_str(), execute);
+            }
 
             /**
-             * @brief Unload a module from the registry by name.
-             * @param name Module name.
-             * @return 0 on success, nonzero on error.
+             * @brief Unregister a module by name.
+             * @param name Module name to unregister.
+             * @return 0 on success, non-zero on error.
              */
-            int unload(const std::string &name) { return fossil_ai_module_unload(registry_, name.c_str()); }
+            int unregister_module(const std::string &name) {
+            return fossil_ai_module_unregister(registry_, name.c_str());
+            }
 
             /**
-             * @brief Activate a module by name (calls on_load).
+             * @brief Retrieve a module by name.
              * @param name Module name.
-             * @return 0 on success, nonzero on error.
+             * @return Module wrapper object.
+             * @throws std::runtime_error if module not found.
              */
-            int start(const std::string &name) { return fossil_ai_module_start(registry_, name.c_str()); }
-
-            /**
-             * @brief Deactivate a module by name (calls on_unload).
-             * @param name Module name.
-             * @return 0 on success, nonzero on error.
-             */
-            int stop(const std::string &name) { return fossil_ai_module_stop(registry_, name.c_str()); }
-
-            /**
-             * @brief Find a module by name.
-             * @param name Module name.
-             * @return Module wrapper for found module.
-             * @throws std::runtime_error if not found.
-             */
-            Module find(const std::string &name) {
-            fossil_ai_module_t *mod = fossil_ai_module_find(registry_, name.c_str());
+            Module get(const std::string &name) {
+            fossil_ai_module_t *mod = fossil_ai_module_get(registry_, name.c_str());
             if (!mod) throw std::runtime_error("Module not found");
             return Module(mod);
             }
 
             /**
-             * @brief Broadcast maintenance call to all modules.
-             * @param chain Pointer to Jellyfish chain.
-             */
-            void maintenance_all(fossil_ai_jellyfish_chain_t *chain) {
-            fossil_ai_module_maintenance_all(registry_, chain);
-            }
-
-            /**
-             * @brief Call commit hook for all modules after commit creation.
-             * @param chain Pointer to Jellyfish chain.
-             * @param block Pointer to Jellyfish block.
-             */
-            void hook_commit(fossil_ai_jellyfish_chain_t *chain, fossil_ai_jellyfish_block_t *block) {
-            fossil_ai_module_hook_commit(registry_, chain, block);
-            }
-
-            /**
-             * @brief Call IO interception hook for all modules before commit creation.
-             * @param input Input string (modifiable).
-             * @param output Output string (modifiable).
-             */
-            void hook_intercept_io(char *input, char *output) {
-            fossil_ai_module_hook_intercept_io(registry_, input, output);
-            }
-
-            /**
-             * @brief Call reason hook for all modules after reasoning output.
+             * @brief Execute a registered module by name.
+             * @param name Module name.
              * @param input Input string.
-             * @param inout_output Output string (modifiable).
-             * @param inout_confidence Confidence value (modifiable).
+             * @param output Output buffer.
+             * @param output_size Size of output buffer.
+             * @return 0 on success, non-zero on error.
              */
-            void hook_reason(const char *input, char *inout_output, float *inout_confidence) {
-            fossil_ai_module_hook_reason(registry_, input, inout_output, inout_confidence);
+            int execute(const std::string &name, const char *input, char *output, size_t output_size) {
+            return fossil_ai_module_execute(registry_, name.c_str(), input, output, output_size);
             }
 
-            /** @brief Print module registry state to stdout. */
-            void dump() const { fossil_ai_module_dump(registry_); }
+            /**
+             * @brief List all active modules in the registry.
+             */
+            void list() const { fossil_ai_module_list(registry_); }
 
-            /** @brief Get number of modules currently in registry. */
+            /**
+             * @brief Get the number of registered modules.
+             * @return Module count.
+             */
             size_t count() const { return registry_->count; }
 
         private:

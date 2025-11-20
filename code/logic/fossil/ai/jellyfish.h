@@ -495,20 +495,6 @@ typedef struct {
 // *****************************************************************************
 
 /**
- * -----------------------------------------------------------------------------
- * Jellyfish Chain API – Function Prototypes
- * -----------------------------------------------------------------------------
- * The following prototypes reflect the updated algorithms and operational
- * semantics described in the implementation comments above. Each function
- * is designed for deterministic, bounded-memory operation, with explicit
- * handling for the extended commit type enum and FSON metadata.
- *
- * All functions are thread-unsafe unless otherwise noted; external
- * synchronization is required for concurrent access.
- * -----------------------------------------------------------------------------
- */
-
-/**
  * Generate a hash for the given input and output.
  * Uses a custom FNV/SBOX/avalanche hash with device salt and time nonce.
  * Not cryptographically secure; suitable for content addressing and
@@ -581,30 +567,6 @@ void fossil_ai_jellyfish_cleanup(fossil_ai_jellyfish_chain_t *chain);
  * Returns number of anomalies found, or -1 on error.
  */
 int  fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_chain_t *chain);
-
-/**
- * @brief Generate a human-readable summary of a Jellyfish chain.
- *
- * This is the DEFAULT summarizer used when a module does not provide
- * its own summary_fn handler. It produces a compressed textual overview
- * of patterns, message types, recency, contributor counts, and semantic
- * features extracted from the chain.
- *
- * @param chain             Pointer to the chain to summarize.
- * @param output            Output buffer for the summary text.
- * @param output_size       Size of the output buffer.
- * @param depth             Summary depth:
- *                           1 = ultra short
- *                           2 = short narrative
- *                           3 = medium detail
- *                           4+ = deep analysis / structured summary
- * @return int              0 on success, non-zero on failure.
- */
-int fossil_ai_jellyfish_summarize(
-    const fossil_ai_jellyfish_chain_t *chain,
-    char *output,
-    size_t output_size,
-    int depth);
 
 /**
  * Prune: invalidates blocks below min_confidence or expired.

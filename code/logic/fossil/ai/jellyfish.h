@@ -807,6 +807,8 @@ namespace fossil {
         * Thread-safety: Not internally synchronized; external synchronization required.
         */
         class Jellyfish {
+        private:
+            fossil_ai_jellyfish_chain_t chain_;
         public:
             /**
             * @brief Construct and initialize an empty chain.

@@ -275,7 +275,7 @@ FOSSIL_TEST_CASE(c_test_jellyfish_decay_confidence) {
 }
 
 FOSSIL_TEST_CASE(c_test_jellyfish_tokenize_basic) {
-    char tokens[8][FOSSIL_JELLYFISH_TOKEN_SIZE];
+    char tokens[8][16]; // FOSSIL_JELLYFISH_TOKEN_SIZE is expected to be 16
     size_t n = fossil_ai_jellyfish_tokenize("Hello, world! This is a test.", tokens, 8);
 
     ASSUME_ITS_TRUE(n > 0);

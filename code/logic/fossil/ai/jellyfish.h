@@ -768,7 +768,7 @@ bool fossil_ai_jellyfish_block_verify_signature(const fossil_ai_jellyfish_block_
  * Returns token count.
  */
 size_t fossil_ai_jellyfish_tokenize(const char *input,
-                                 char tokens[][FOSSIL_JELLYFISH_TOKEN_SIZE],
+                                 char (*tokens)[FOSSIL_JELLYFISH_TOKEN_SIZE],
                                  size_t max_tokens);
 
 /* ------------------------------- Cloning ----------------------------------- */

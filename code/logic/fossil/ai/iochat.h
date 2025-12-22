@@ -39,6 +39,8 @@ extern "C"
 #define FOSSIL_AI_CHAT_MAX_HISTORY     128
 #define FOSSIL_AI_CHAT_MAX_RESPONSE    512
 #define FOSSIL_AI_CHAT_PERSISTENT_MAX  256
+#define FOSSIL_AI_CHAT_MAX_TOKENS      128
+#define FOSSIL_AI_CHAT_MAX_TOKEN_LEN   32
 
 // ======================================================
 // Intent Classification
@@ -50,11 +52,24 @@ typedef enum {
     FOSSIL_AI_CHAT_INTENT_COMMAND,
     FOSSIL_AI_CHAT_INTENT_STATEMENT,
     FOSSIL_AI_CHAT_INTENT_SOCIAL,
-    FOSSIL_AI_CHAT_INTENT_RELATIONSHIP   // forbidden
+    FOSSIL_AI_CHAT_INTENT_RELATIONSHIP
 } fossil_ai_chat_intent_t;
 
 // ======================================================
-// Persistent Memory (SAFE ONLY)
+// Risk Classification (Hard Blocks)
+// ======================================================
+
+typedef enum {
+    FOSSIL_AI_CHAT_RISK_NONE = 0,
+    FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT,
+    FOSSIL_AI_CHAT_RISK_RELATIONSHIP,
+    FOSSIL_AI_CHAT_RISK_DEPENDENCY,
+    FOSSIL_AI_CHAT_RISK_SECURITY,
+    FOSSIL_AI_CHAT_RISK_RELIGION
+} fossil_ai_chat_risk_t;
+
+// ======================================================
+// Persistent Memory (FACTUAL ONLY)
 // ======================================================
 
 typedef enum {
@@ -104,16 +119,55 @@ fossil_ai_chat_load_persistent(fossil_ai_jellyfish_model_t *model,
 
 #ifdef __cplusplus
 }
-#include <stdexcept>
-#include <vector>
 #include <string>
+#include <vector>
+#include <memory>
+#include <stdexcept>
 
 namespace fossil {
 
     namespace ai {
-
-
-
+    
+        class Chat {
+        public:
+            Chat(fossil_ai_jellyfish_model_t* model, const std::string& session_id)
+                : model_(model) {
+                if (!model_) throw std::runtime_error("Model is null");
+                ctx_ = fossil_ai_chat_start_session(session_id.c_str());
+                if (!ctx_) throw std::runtime_error("Failed to start session");
+            }
+        
+            ~Chat() {
+                if (ctx_) {
+                    fossil_ai_chat_end_session(ctx_);
+                    ctx_ = nullptr;
+                }
+            }
+        
+            // Respond to a user message
+            std::string respond(const std::string& user_message) {
+                char buf[FOSSIL_AI_CHAT_MAX_RESPONSE] = {0};
+                if (!fossil_ai_chat_respond(model_, ctx_, user_message.c_str(), buf, sizeof(buf))) {
+                    throw std::runtime_error("Respond failed");
+                }
+                return std::string(buf);
+            }
+        
+            // Save persistent factual memory
+            bool save_persistent(const std::string& path) {
+                return fossil_ai_chat_save_persistent(model_, path.c_str());
+            }
+        
+            // Load persistent factual memory
+            bool load_persistent(const std::string& path) {
+                return fossil_ai_chat_load_persistent(model_, path.c_str());
+            }
+        
+        private:
+            fossil_ai_jellyfish_model_t* model_;
+            fossil_ai_jellyfish_context_t* ctx_;
+        };
+    
     } // namespace ai
 
 } // namespace fossil

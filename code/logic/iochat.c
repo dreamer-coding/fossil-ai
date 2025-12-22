@@ -31,12 +31,33 @@
 #include <assert.h>
 
 // ======================================================
+// Hash Helpers
+// ======================================================
+
+static unsigned int hash_string(const char *s) {
+    unsigned int h = 5381;
+    while (*s) h = ((h << 5) + h) + (unsigned char)(*s++);
+    return h % FOSSIL_AI_CHAT_HASH_SIZE;
+}
+
+static void init_hash(const char **terms, size_t term_count, unsigned char hash_table[FOSSIL_AI_CHAT_HASH_SIZE]) {
+    for (size_t i = 0; i < term_count; i++) {
+        unsigned int h = hash_string(terms[i]);
+        hash_table[h] = 1;
+    }
+}
+
+static bool hash_lookup(const char *word, unsigned char hash_table[FOSSIL_AI_CHAT_HASH_SIZE]) {
+    return hash_table[hash_string(word)] != 0;
+}
+
+// ======================================================
 // Normalization & Tokenization
 // ======================================================
 
-static size_t
-normalize_and_tokenize(const char *input,
-                       char tokens[FOSSIL_AI_CHAT_MAX_TOKENS][FOSSIL_AI_CHAT_MAX_TOKEN_LEN]) {
+static size_t normalize_and_tokenize(const char *input,
+    char tokens[FOSSIL_AI_CHAT_MAX_TOKENS][FOSSIL_AI_CHAT_MAX_TOKEN_LEN]) {
+
     char buf[1024];
     size_t len = 0;
 
@@ -58,33 +79,53 @@ normalize_and_tokenize(const char *input,
         while (*p && *p != ' ' && i < FOSSIL_AI_CHAT_MAX_TOKEN_LEN - 1)
             tokens[count][i++] = *p++;
         tokens[count][i] = '\0';
-
         count++;
     }
     return count;
 }
 
 // ======================================================
-// Vocabulary Restriction
+// Vocabulary / Misspelling Tolerance
 // ======================================================
 
-static bool
-fossil_ai_chat_is_allowed_vocab(const char *word) {
-    static const char *vocab[] = {
-        "hello","hi","yes","no","maybe","sure","i","you","we","they",
-        "am","are","can","will","do","what","why","how","when","where",
-        "think","know","believe","understand","help","learn","work","build","use",
-        "time","today","now","later","good","bad","right","wrong",
-        "simple","clear","important","model","system","memory","context"
-    };
-    for (size_t i = 0; i < sizeof(vocab)/sizeof(vocab[0]); i++)
-        if (strcmp(word, vocab[i]) == 0)
+static const char *VOCAB[] = {
+    "hello","hi","yes","no","maybe","sure","i","you","we","they",
+    "am","are","can","will","do","what","why","how","when","where",
+    "think","know","believe","understand","help","learn","work","build","use",
+    "time","today","now","later","good","bad","right","wrong",
+    "simple","clear","important","model","system","memory","context"
+};
+
+static int levenshtein(const char *s1, const char *s2) {
+    size_t len1 = strlen(s1), len2 = strlen(s2);
+    int matrix[len1 + 1][len2 + 1];
+    for (size_t i = 0; i <= len1; i++) matrix[i][0] = (int)i;
+    for (size_t j = 0; j <= len2; j++) matrix[0][j] = (int)j;
+    for (size_t i = 1; i <= len1; i++) {
+        for (size_t j = 1; j <= len2; j++) {
+            int cost = (s1[i-1] == s2[j-1]) ? 0 : 1;
+            int del = matrix[i-1][j] + 1;
+            int ins = matrix[i][j-1] + 1;
+            int sub = matrix[i-1][j-1] + cost;
+            matrix[i][j] = del < ins ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+        }
+    }
+    return matrix[len1][len2];
+}
+
+static bool fossil_ai_chat_lookup_vocab(const char *word) {
+    size_t n = sizeof(VOCAB)/sizeof(VOCAB[0]);
+    for (size_t i = 0; i < n; i++)
+        if (strcmp(word, VOCAB[i]) == 0 || levenshtein(word, VOCAB[i]) <= 1)
             return true;
     return false;
 }
 
-static bool
-fossil_ai_chat_is_american_english(const char *text) {
+// ======================================================
+// American English Restriction
+// ======================================================
+
+static bool fossil_ai_chat_is_american_english(const char *text) {
     for (; *text; text++) {
         unsigned char c = *text;
         if (!(c >= 32 && c <= 126))
@@ -113,52 +154,52 @@ static const char *RELIGION_TERMS[] = {
     "god","allah","jesus","christ","bible","quran","faith","religion","pray","worship"
 };
 
-// ======================================================
-// Scoring Engine
-// ======================================================
+static unsigned char EMOTIONAL_HASH[FOSSIL_AI_CHAT_HASH_SIZE] = {0};
+static unsigned char DEPENDENCY_HASH[FOSSIL_AI_CHAT_HASH_SIZE] = {0};
+static unsigned char RELATIONSHIP_HASH[FOSSIL_AI_CHAT_HASH_SIZE] = {0};
+static unsigned char SECURITY_HASH[FOSSIL_AI_CHAT_HASH_SIZE] = {0};
+static unsigned char RELIGION_HASH[FOSSIL_AI_CHAT_HASH_SIZE] = {0};
 
-static int
-score_category(char tokens[FOSSIL_AI_CHAT_MAX_TOKENS][FOSSIL_AI_CHAT_MAX_TOKEN_LEN],
-               size_t count,
-               const char **terms,
-               size_t term_count) {
-    int score = 0;
-    for (size_t i = 0; i < count; i++) {
-        for (size_t t = 0; t < term_count; t++) {
-            if (strcmp(tokens[i], terms[t]) == 0)
-                score++;
-        }
-    }
-    return score;
+static void init_hash_tables() {
+    static int inited = 0;
+    if (inited) return;
+    init_hash(EMOTIONAL_TERMS, sizeof(EMOTIONAL_TERMS)/sizeof(EMOTIONAL_TERMS[0]), EMOTIONAL_HASH);
+    init_hash(DEPENDENCY_TERMS, sizeof(DEPENDENCY_TERMS)/sizeof(DEPENDENCY_TERMS[0]), DEPENDENCY_HASH);
+    init_hash(RELATIONSHIP_TERMS, sizeof(RELATIONSHIP_TERMS)/sizeof(RELATIONSHIP_TERMS[0]), RELATIONSHIP_HASH);
+    init_hash(SECURITY_TERMS, sizeof(SECURITY_TERMS)/sizeof(SECURITY_TERMS[0]), SECURITY_HASH);
+    init_hash(RELIGION_TERMS, sizeof(RELIGION_TERMS)/sizeof(RELIGION_TERMS[0]), RELIGION_HASH);
+    inited = 1;
 }
 
 // ======================================================
-// Advanced Risk Detection
+// Risk Detection with Hashes
 // ======================================================
 
-static fossil_ai_chat_risk_t
-fossil_ai_chat_detect_risk(const char *text) {
+static fossil_ai_chat_risk_t fossil_ai_chat_detect_risk(const char *text) {
+    init_hash_tables();
+
     char tokens[FOSSIL_AI_CHAT_MAX_TOKENS][FOSSIL_AI_CHAT_MAX_TOKEN_LEN];
     size_t token_count = normalize_and_tokenize(text, tokens);
 
-    // Vocabulary restriction
-    for (size_t i = 0; i < token_count; i++) {
-        if (!fossil_ai_chat_is_allowed_vocab(tokens[i]))
-            return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT; // block unknown words as unsafe
-    }
+    for (size_t i = 0; i < token_count; i++)
+        if (!fossil_ai_chat_lookup_vocab(tokens[i]))
+            return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT;
 
-    int emotional = score_category(tokens, token_count, EMOTIONAL_TERMS, sizeof(EMOTIONAL_TERMS)/sizeof(EMOTIONAL_TERMS[0]));
-    int dependency = score_category(tokens, token_count, DEPENDENCY_TERMS, sizeof(DEPENDENCY_TERMS)/sizeof(DEPENDENCY_TERMS[0]));
-    int relationship = score_category(tokens, token_count, RELATIONSHIP_TERMS, sizeof(RELATIONSHIP_TERMS)/sizeof(RELATIONSHIP_TERMS[0]));
-    int security = score_category(tokens, token_count, SECURITY_TERMS, sizeof(SECURITY_TERMS)/sizeof(SECURITY_TERMS[0]));
-    int religion = score_category(tokens, token_count, RELIGION_TERMS, sizeof(RELIGION_TERMS)/sizeof(RELIGION_TERMS[0]));
+    int emotional = 0, dependency = 0, relationship = 0, security = 0, religion = 0;
+
+    for (size_t i = 0; i < token_count; i++) {
+        if (hash_lookup(tokens[i], EMOTIONAL_HASH)) emotional++;
+        if (hash_lookup(tokens[i], DEPENDENCY_HASH)) dependency++;
+        if (hash_lookup(tokens[i], RELATIONSHIP_HASH)) relationship++;
+        if (hash_lookup(tokens[i], SECURITY_HASH)) security++;
+        if (hash_lookup(tokens[i], RELIGION_HASH)) religion++;
+    }
 
     if (security > 0) return FOSSIL_AI_CHAT_RISK_SECURITY;
     if (religion > 0) return FOSSIL_AI_CHAT_RISK_RELIGION;
     if (relationship > 0) return FOSSIL_AI_CHAT_RISK_RELATIONSHIP;
     if (emotional > 0 && dependency > 0) return FOSSIL_AI_CHAT_RISK_DEPENDENCY;
     if (emotional > 0) return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT;
-
     return FOSSIL_AI_CHAT_RISK_NONE;
 }
 
@@ -166,14 +207,12 @@ fossil_ai_chat_detect_risk(const char *text) {
 // Embedding (Deterministic)
 // ======================================================
 
-static void
-fossil_ai_chat_embed(const char *text, float *out) {
+static void fossil_ai_chat_embed(const char *text, float *out) {
     memset(out, 0, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
     size_t pos = 0;
     while (*text && pos < FOSSIL_AI_JELLYFISH_EMBED_SIZE) {
-        if (isalpha((unsigned char)*text)) {
+        if (isalpha((unsigned char)*text))
             out[pos++] = (float)(tolower(*text) - 'a') / 26.0f;
-        }
         text++;
     }
 }
@@ -182,19 +221,16 @@ fossil_ai_chat_embed(const char *text, float *out) {
 // Session Management
 // ======================================================
 
-fossil_ai_jellyfish_context_t *
-fossil_ai_chat_start_session(const char *session_id) {
+fossil_ai_jellyfish_context_t *fossil_ai_chat_start_session(const char *session_id) {
     fossil_ai_jellyfish_context_t *ctx = fossil_ai_jellyfish_create_context(session_id);
     ctx->history_len = 0;
     ctx->history = calloc(FOSSIL_AI_CHAT_MAX_HISTORY, sizeof(void *));
     return ctx;
 }
 
-void
-fossil_ai_chat_end_session(fossil_ai_jellyfish_context_t *ctx) {
+void fossil_ai_chat_end_session(fossil_ai_jellyfish_context_t *ctx) {
     if (!ctx) return;
-    for (size_t i = 0; i < ctx->history_len; i++)
-        free(ctx->history[i]);
+    for (size_t i = 0; i < ctx->history_len; i++) free(ctx->history[i]);
     free(ctx->history);
     fossil_ai_jellyfish_free_context(ctx);
 }
@@ -203,8 +239,7 @@ fossil_ai_chat_end_session(fossil_ai_jellyfish_context_t *ctx) {
 // Persistent Memory I/O
 // ======================================================
 
-bool
-fossil_ai_chat_save_persistent(const fossil_ai_jellyfish_model_t *model, const char *path) {
+bool fossil_ai_chat_save_persistent(const fossil_ai_jellyfish_model_t *model, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) return false;
     fwrite(&model->persistent_len, sizeof(size_t), 1, f);
@@ -213,8 +248,7 @@ fossil_ai_chat_save_persistent(const fossil_ai_jellyfish_model_t *model, const c
     return true;
 }
 
-bool
-fossil_ai_chat_load_persistent(fossil_ai_jellyfish_model_t *model, const char *path) {
+bool fossil_ai_chat_load_persistent(fossil_ai_jellyfish_model_t *model, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
     fread(&model->persistent_len, sizeof(size_t), 1, f);
@@ -224,19 +258,17 @@ fossil_ai_chat_load_persistent(fossil_ai_jellyfish_model_t *model, const char *p
 }
 
 // ======================================================
-// Chat Respond (Non-Bypassable Safeguards)
+// Chat Respond (Hard Blocks + Safe Embedding)
 // ======================================================
 
-bool
-fossil_ai_chat_respond(fossil_ai_jellyfish_model_t *model,
-                       fossil_ai_jellyfish_context_t *ctx,
-                       const char *user_message,
-                       char *response,
-                       size_t response_len) {
-    if (!model || !ctx || !user_message || !response)
-        return false;
+bool fossil_ai_chat_respond(fossil_ai_jellyfish_model_t *model,
+                            fossil_ai_jellyfish_context_t *ctx,
+                            const char *user_message,
+                            char *response,
+                            size_t response_len) {
 
-    // Only American English
+    if (!model || !ctx || !user_message || !response) return false;
+
     if (!fossil_ai_chat_is_american_english(user_message)) {
         strncpy(response, "Only American English input is supported.", response_len);
         return true;
@@ -244,7 +276,6 @@ fossil_ai_chat_respond(fossil_ai_jellyfish_model_t *model,
 
     fossil_ai_chat_risk_t risk = fossil_ai_chat_detect_risk(user_message);
 
-    // ---------------- HARD BLOCKS ----------------
     switch (risk) {
         case FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT:
         case FOSSIL_AI_CHAT_RISK_DEPENDENCY:

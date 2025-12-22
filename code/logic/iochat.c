@@ -23,353 +23,266 @@
  * -----------------------------------------------------------------------------
  */
 #include "fossil/ai/iochat.h"
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <ctype.h>
+#include <time.h>
+#include <assert.h>
 
-static char current_context_name[64] = {0};
-static time_t session_start_time = 0;
-static uint64_t session_id = 0;
-static FILE *session_log_file = NULL;
+// ======================================================
+// Normalization & Tokenization
+// ======================================================
 
-// Helper: hex encode hash
-static void hash_to_hex(const uint8_t *hash, char *hex, size_t hex_size) {
-    static const char *digits = "0123456789abcdef";
-    size_t need = FOSSIL_JELLYFISH_HASH_SIZE * 2 + 1;
-    if (hex_size < need) {
-        if (hex_size) hex[0] = 0;
-        return;
-    }
-    for (size_t i = 0; i < FOSSIL_JELLYFISH_HASH_SIZE; ++i) {
-        hex[i * 2]     = digits[(hash[i] >> 4) & 0xF];
-        hex[i * 2 + 1] = digits[hash[i] & 0xF];
-    }
-    hex[FOSSIL_JELLYFISH_HASH_SIZE * 2] = 0;
-}
+static size_t
+normalize_and_tokenize(const char *input,
+                       char tokens[FOSSIL_AI_CHAT_MAX_TOKENS][FOSSIL_AI_CHAT_MAX_TOKEN_LEN]) {
+    char buf[1024];
+    size_t len = 0;
 
-// Helper: Format timestamp string
-static void format_timestamp(time_t t, char *buf, size_t size) {
-    struct tm *tm_info = localtime(&t);
-    if (tm_info)
-        strftime(buf, size, "%Y-%m-%d %H:%M:%S", tm_info);
-    else if (size)
-        buf[0] = 0;
-}
-
-// Helper: Open session log file for appending
-static int open_session_log(uint64_t id) {
-    char filename[128];
-    snprintf(filename, sizeof(filename), "session_%llu.log", (unsigned long long)id);
-    session_log_file = fopen(filename, "a");
-    return session_log_file ? 0 : -1;
-}
-
-// Helper: Close session log file
-static void close_session_log(void) {
-    if (session_log_file) {
-        fclose(session_log_file);
-        session_log_file = NULL;
-    }
-}
-
-// Logs a line to the session log (if open)
-static void log_session_line(const char *line) {
-    if (session_log_file) {
-        fprintf(session_log_file, "%s\n", line);
-        fflush(session_log_file);
-    }
-}
-
-// Helper: log line with hash of input/output
-static void log_hashed_event(const char *prefix, const char *input, const char *output) {
-    if (!prefix) return;
-    uint8_t hash[FOSSIL_JELLYFISH_HASH_SIZE];
-    fossil_ai_jellyfish_hash(input ? input : "", output ? output : "", hash);
-    char hex[FOSSIL_JELLYFISH_HASH_SIZE * 2 + 1];
-    hash_to_hex(hash, hex, sizeof(hex));
-    char line[512];
-    snprintf(line, sizeof(line), "%s hash=%s in=\"%s\" out=\"%s\"",
-             prefix, hex, input ? input : "", output ? output : "");
-    log_session_line(line);
-}
-
-// Add a system block to the chain (immutable)
-static void record_system_block(fossil_ai_jellyfish_chain_t *chain, const char *msg) {
-    if (!chain || !msg) return;
-    if (chain->count >= FOSSIL_JELLYFISH_MAX_MEM) return;
-
-    fossil_ai_jellyfish_learn(chain, "[system]", msg);
-
-    if (chain->count > 0) {
-        fossil_ai_jellyfish_block_t *b = &chain->commits[chain->count - 1];
-        fossil_ai_jellyfish_mark_immutable(b);
-        fossil_ai_jellyfish_block_set_message(b, "system-context");
-        if (chain->count == 1)
-            b->block_type = JELLY_COMMIT_INIT;
+    for (; *input && len < sizeof(buf) - 1; input++) {
+        if (isalpha((unsigned char)*input) || isspace((unsigned char)*input))
+            buf[len++] = (char)tolower(*input);
         else
-            b->block_type = JELLY_COMMIT_TAG;
+            buf[len++] = ' ';
     }
-    log_hashed_event("[system-block]", "[system]", msg);
-}
+    buf[len] = '\0';
 
-// --- API Functions ---
+    size_t count = 0;
+    char *p = buf;
+    while (*p && count < FOSSIL_AI_CHAT_MAX_TOKENS) {
+        while (*p == ' ') p++;
+        if (!*p) break;
 
-int fossil_ai_iochat_start(const char *context_name, fossil_ai_jellyfish_chain_t *chain) {
-    if (context_name && strlen(context_name) < sizeof(current_context_name)) {
-        strncpy(current_context_name, context_name, sizeof(current_context_name) - 1);
-    } else {
-        strncpy(current_context_name, "default", sizeof(current_context_name) - 1);
-    }
+        size_t i = 0;
+        while (*p && *p != ' ' && i < FOSSIL_AI_CHAT_MAX_TOKEN_LEN - 1)
+            tokens[count][i++] = *p++;
+        tokens[count][i] = '\0';
 
-    session_start_time = time(NULL);
-    session_id = (uint64_t)session_start_time;
-
-    if (open_session_log(session_id) != 0) {
-        fprintf(stderr, "[fossil_ai_iochat] Warning: Could not open session log file.\n");
-    }
-
-    char ts[32];
-    format_timestamp(session_start_time, ts, sizeof(ts));
-
-    char log_line[256];
-    snprintf(log_line, sizeof(log_line), "Session started: %s @ %s", current_context_name, ts);
-    log_session_line(log_line);
-
-    if (chain) {
-        int anomalies = fossil_ai_jellyfish_audit(chain);
-        char audit_line[128];
-        snprintf(audit_line, sizeof(audit_line), "Initial chain audit anomalies=%d", anomalies);
-        log_session_line(audit_line);
-
-        char system_msg[200];
-        snprintf(system_msg, sizeof(system_msg), "Session started with context \"%s\" at %s", current_context_name, ts);
-        record_system_block(chain, system_msg);
-    }
-
-    return 0;
-}
-
-int fossil_ai_iochat_respond(fossil_ai_jellyfish_chain_t *chain, const char *input, char *output, size_t size) {
-    if (!chain || !input || !output || size == 0) return -1;
-
-    float confidence = 0.0f;
-    const fossil_ai_jellyfish_block_t *matched_block = NULL;
-
-    bool found = fossil_ai_jellyfish_reason_verbose(chain, input, output, &confidence, &matched_block);
-
-    if (found && matched_block && confidence > 0.3f) {
-        char log_line[256];
-        snprintf(log_line, sizeof(log_line), "Input: \"%s\" → Output: \"%.*s\" (confidence: %.2f)",
-                 input, (int)(size - 1), output, confidence);
-        log_session_line(log_line);
-
-        int conflict = fossil_ai_jellyfish_detect_conflict(chain, input, output);
-        if (conflict == 0) {
-            fossil_ai_jellyfish_learn(chain, input, output);
-            log_hashed_event("[learn]", input, output);
-        } else {
-            char cbuf[160];
-            snprintf(cbuf, sizeof(cbuf), "Conflict detected (skipped learn) input=\"%s\"", input);
-            log_session_line(cbuf);
-        }
-        return 0;
-    } else {
-        const char *fallback = "I'm not sure how to respond to that yet.";
-        strncpy(output, fallback, size - 1);
-        output[size - 1] = '\0';
-
-        char log_line[256];
-        snprintf(log_line, sizeof(log_line), "Input: \"%s\" → Fallback response used", input);
-        log_session_line(log_line);
-
-        int conflict = fossil_ai_jellyfish_detect_conflict(chain, input, output);
-        if (conflict == 0 && chain->count < FOSSIL_JELLYFISH_MAX_MEM) {
-            fossil_ai_jellyfish_learn(chain, input, output);
-            log_hashed_event("[learn-fallback]", input, output);
-        }
-        return -1;
-    }
-}
-
-int fossil_ai_iochat_end(fossil_ai_jellyfish_chain_t *chain) {
-    time_t now = time(NULL);
-    double duration = difftime(now, session_start_time);
-
-    char ts[32];
-    format_timestamp(now, ts, sizeof(ts));
-
-    char log_line[256];
-    snprintf(log_line, sizeof(log_line), "Session \"%s\" ended after %.2f seconds @ %s", current_context_name, duration, ts);
-    log_session_line(log_line);
-
-    if (chain) {
-        bool ok = fossil_ai_jellyfish_verify_chain(chain);
-        float trust = fossil_ai_jellyfish_chain_trust_score(chain);
-        char verify_line[160];
-        snprintf(verify_line, sizeof(verify_line), "Final verify=%s trust=%.3f", ok ? "ok" : "FAIL", trust);
-        log_session_line(verify_line);
-
-        char system_msg[128];
-        snprintf(system_msg, sizeof(system_msg), "Session ended after %.2f seconds at %s", duration, ts);
-        record_system_block(chain, system_msg);
-    }
-
-    close_session_log();
-
-    memset(current_context_name, 0, sizeof(current_context_name));
-    session_start_time = 0;
-    session_id = 0;
-
-    return 0;
-}
-
-int fossil_ai_iochat_inject_system_message(fossil_ai_jellyfish_chain_t *chain, const char *message) {
-    if (!chain || !message || strlen(message) == 0) {
-        return -1;
-    }
-
-    if (chain->count >= FOSSIL_JELLYFISH_MAX_MEM) {
-        fprintf(stderr, "[fossil_ai_iochat] Chain memory full, cannot inject system message.\n");
-        return -1;
-    }
-
-    fossil_ai_jellyfish_learn(chain, "[system]", message);
-
-    if (chain->count > 0) {
-        fossil_ai_jellyfish_block_t *b = &chain->commits[chain->count - 1];
-        fossil_ai_jellyfish_mark_immutable(b);
-        fossil_ai_jellyfish_block_set_message(b, "system-injected");
-        b->block_type = JELLY_COMMIT_PATCH;
-    }
-
-    log_hashed_event("[inject-system]", "[system]", message);
-    printf("[fossil_ai_iochat] Injected system message: \"%s\"\n", message);
-
-    return 0;
-}
-
-int fossil_ai_iochat_learn_response(fossil_ai_jellyfish_chain_t *chain, const char *input, const char *output) {
-    if (!chain || !input || !output || strlen(input) == 0 || strlen(output) == 0) {
-        return -1;
-    }
-
-    if (chain->count >= FOSSIL_JELLYFISH_MAX_MEM) {
-        fprintf(stderr, "[fossil_ai_iochat] Chain memory full, cannot learn new response.\n");
-        return -1;
-    }
-
-    int conflict = fossil_ai_jellyfish_detect_conflict(chain, input, output);
-    if (conflict != 0) {
-        fprintf(stderr, "[fossil_ai_iochat] Conflict detected for input \"%s\", learn skipped.\n", input);
-        return -1;
-    }
-
-    fossil_ai_jellyfish_learn(chain, input, output);
-    log_hashed_event("[manual-learn]", input, output);
-
-    printf("[fossil_ai_iochat] Learned new response for input: \"%s\"\n", input);
-
-    return 0;
-}
-
-int fossil_ai_iochat_turn_count(const fossil_ai_jellyfish_chain_t *chain) {
-    if (!chain) return 0;
-
-    int count = 0;
-    for (size_t i = 0; i < chain->count; ++i) {
-        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-        if (b->attributes.valid &&
-            strncmp(b->io.input, "[system]", sizeof("[system]") - 1) != 0) {
-            ++count;
-        }
+        count++;
     }
     return count;
 }
 
-int fossil_ai_iochat_summarize_session(const fossil_ai_jellyfish_chain_t *chain, char *summary, size_t size) {
-    if (!chain || !summary || size == 0) return -1;
+// ======================================================
+// Vocabulary Restriction
+// ======================================================
 
-    size_t pos = 0;
-    for (size_t i = 0; i < chain->count && pos + 64 < size; ++i) {
-        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-        if (!b->attributes.valid) continue;
-        if (strncmp(b->io.input, "[system]", FOSSIL_JELLYFISH_INPUT_SIZE) == 0) continue;
-
-        int written = snprintf(summary + pos, size - pos, "[%s] %s. ", b->io.input, b->io.output);
-        if (written < 0) break;
-        pos += (size_t)written;
-    }
-
-    return pos > 0 ? 0 : -1;
+static bool
+fossil_ai_chat_is_allowed_vocab(const char *word) {
+    static const char *vocab[] = {
+        "hello","hi","yes","no","maybe","sure","i","you","we","they",
+        "am","are","can","will","do","what","why","how","when","where",
+        "think","know","believe","understand","help","learn","work","build","use",
+        "time","today","now","later","good","bad","right","wrong",
+        "simple","clear","important","model","system","memory","context"
+    };
+    for (size_t i = 0; i < sizeof(vocab)/sizeof(vocab[0]); i++)
+        if (strcmp(word, vocab[i]) == 0)
+            return true;
+    return false;
 }
 
-int fossil_ai_iochat_filter_recent(const fossil_ai_jellyfish_chain_t *chain, fossil_ai_jellyfish_chain_t *out_chain, int turn_count) {
-    if (!chain || !out_chain || turn_count <= 0) return -1;
-
-    fossil_ai_jellyfish_init(out_chain);
-    int added = 0;
-
-    for (int i = (int)chain->count - 1; i >= 0 && added < turn_count; --i) {
-        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-        if (!b->attributes.valid) continue;
-        if (strncmp(b->io.input, "[system]", FOSSIL_JELLYFISH_INPUT_SIZE) == 0) continue;
-
-        out_chain->commits[turn_count - added - 1] = *b;
-        out_chain->commits[turn_count - added - 1].attributes.valid = 1;
-        added++;
+static bool
+fossil_ai_chat_is_american_english(const char *text) {
+    for (; *text; text++) {
+        unsigned char c = *text;
+        if (!(c >= 32 && c <= 126))
+            return false;
     }
-
-    out_chain->count = (size_t)added;
-    return 0;
+    return true;
 }
 
-int fossil_ai_iochat_export_history(const fossil_ai_jellyfish_chain_t *chain, const char *filepath) {
-    if (!chain || !filepath) return -1;
+// ======================================================
+// Semantic Term Buckets
+// ======================================================
 
-    FILE *f = fopen(filepath, "w");
-    if (!f) return -1;
+static const char *EMOTIONAL_TERMS[] = {
+    "sad","depressed","lonely","empty","hopeless","hurt","cry","upset","anxious","afraid","scared"
+};
+static const char *DEPENDENCY_TERMS[] = {
+    "need","depend","only","without","lost"
+};
+static const char *RELATIONSHIP_TERMS[] = {
+    "love","relationship","partner","girlfriend","boyfriend","husband","wife","romantic","date"
+};
+static const char *SECURITY_TERMS[] = {
+    "password","secret","key","token","credential","private","exploit","bypass","hack","phish"
+};
+static const char *RELIGION_TERMS[] = {
+    "god","allah","jesus","christ","bible","quran","faith","religion","pray","worship"
+};
 
-    for (size_t i = 0; i < chain->count; ++i) {
-        const fossil_ai_jellyfish_block_t *b = &chain->commits[i];
-        if (!b->attributes.valid) continue;
-        fprintf(f, "[%s] => %s\n", b->io.input, b->io.output);
-    }
+// ======================================================
+// Scoring Engine
+// ======================================================
 
-    fclose(f);
-    return 0;
-}
-
-int fossil_ai_iochat_import_context(fossil_ai_jellyfish_chain_t *chain, const char *filepath) {
-    if (!chain || !filepath) return -1;
-
-    FILE *f = fopen(filepath, "r");
-    if (!f) return -1;
-
-    char line[512];
-    while (fgets(line, sizeof(line), f)) {
-        char *arrow = strstr(line, "=>");
-        if (!arrow) continue;
-
-        *arrow = '\0';
-        char *input = line;
-        char *output = arrow + 2;
-
-        while (*input == '[') ++input;
-        char *end = strchr(input, ']');
-        if (end) *end = '\0';
-
-        while (*output == ' ') ++output;
-        end = strchr(output, '\n');
-        if (end) *end = '\0';
-
-        if (chain->count >= FOSSIL_JELLYFISH_MAX_MEM) break;
-        if (fossil_ai_jellyfish_detect_conflict(chain, input, output) == 0) {
-            fossil_ai_jellyfish_learn(chain, input, output);
-            log_hashed_event("[import-learn]", input, output);
-            if (chain->count > 0) {
-                fossil_ai_jellyfish_block_t *b = &chain->commits[chain->count - 1];
-                b->block_type = JELLY_COMMIT_IMPORT;
-            }
+static int
+score_category(char tokens[FOSSIL_AI_CHAT_MAX_TOKENS][FOSSIL_AI_CHAT_MAX_TOKEN_LEN],
+               size_t count,
+               const char **terms,
+               size_t term_count) {
+    int score = 0;
+    for (size_t i = 0; i < count; i++) {
+        for (size_t t = 0; t < term_count; t++) {
+            if (strcmp(tokens[i], terms[t]) == 0)
+                score++;
         }
     }
+    return score;
+}
 
+// ======================================================
+// Advanced Risk Detection
+// ======================================================
+
+static fossil_ai_chat_risk_t
+fossil_ai_chat_detect_risk(const char *text) {
+    char tokens[FOSSIL_AI_CHAT_MAX_TOKENS][FOSSIL_AI_CHAT_MAX_TOKEN_LEN];
+    size_t token_count = normalize_and_tokenize(text, tokens);
+
+    // Vocabulary restriction
+    for (size_t i = 0; i < token_count; i++) {
+        if (!fossil_ai_chat_is_allowed_vocab(tokens[i]))
+            return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT; // block unknown words as unsafe
+    }
+
+    int emotional = score_category(tokens, token_count, EMOTIONAL_TERMS, sizeof(EMOTIONAL_TERMS)/sizeof(EMOTIONAL_TERMS[0]));
+    int dependency = score_category(tokens, token_count, DEPENDENCY_TERMS, sizeof(DEPENDENCY_TERMS)/sizeof(DEPENDENCY_TERMS[0]));
+    int relationship = score_category(tokens, token_count, RELATIONSHIP_TERMS, sizeof(RELATIONSHIP_TERMS)/sizeof(RELATIONSHIP_TERMS[0]));
+    int security = score_category(tokens, token_count, SECURITY_TERMS, sizeof(SECURITY_TERMS)/sizeof(SECURITY_TERMS[0]));
+    int religion = score_category(tokens, token_count, RELIGION_TERMS, sizeof(RELIGION_TERMS)/sizeof(RELIGION_TERMS[0]));
+
+    if (security > 0) return FOSSIL_AI_CHAT_RISK_SECURITY;
+    if (religion > 0) return FOSSIL_AI_CHAT_RISK_RELIGION;
+    if (relationship > 0) return FOSSIL_AI_CHAT_RISK_RELATIONSHIP;
+    if (emotional > 0 && dependency > 0) return FOSSIL_AI_CHAT_RISK_DEPENDENCY;
+    if (emotional > 0) return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT;
+
+    return FOSSIL_AI_CHAT_RISK_NONE;
+}
+
+// ======================================================
+// Embedding (Deterministic)
+// ======================================================
+
+static void
+fossil_ai_chat_embed(const char *text, float *out) {
+    memset(out, 0, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
+    size_t pos = 0;
+    while (*text && pos < FOSSIL_AI_JELLYFISH_EMBED_SIZE) {
+        if (isalpha((unsigned char)*text)) {
+            out[pos++] = (float)(tolower(*text) - 'a') / 26.0f;
+        }
+        text++;
+    }
+}
+
+// ======================================================
+// Session Management
+// ======================================================
+
+fossil_ai_jellyfish_context_t *
+fossil_ai_chat_start_session(const char *session_id) {
+    fossil_ai_jellyfish_context_t *ctx = fossil_ai_jellyfish_create_context(session_id);
+    ctx->history_len = 0;
+    ctx->history = calloc(FOSSIL_AI_CHAT_MAX_HISTORY, sizeof(void *));
+    return ctx;
+}
+
+void
+fossil_ai_chat_end_session(fossil_ai_jellyfish_context_t *ctx) {
+    if (!ctx) return;
+    for (size_t i = 0; i < ctx->history_len; i++)
+        free(ctx->history[i]);
+    free(ctx->history);
+    fossil_ai_jellyfish_free_context(ctx);
+}
+
+// ======================================================
+// Persistent Memory I/O
+// ======================================================
+
+bool
+fossil_ai_chat_save_persistent(const fossil_ai_jellyfish_model_t *model, const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    fwrite(&model->persistent_len, sizeof(size_t), 1, f);
+    fwrite(model->persistent, sizeof(fossil_ai_chat_persistent_memory_t), model->persistent_len, f);
     fclose(f);
-    return 0;
+    return true;
+}
+
+bool
+fossil_ai_chat_load_persistent(fossil_ai_jellyfish_model_t *model, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    fread(&model->persistent_len, sizeof(size_t), 1, f);
+    fread(model->persistent, sizeof(fossil_ai_chat_persistent_memory_t), model->persistent_len, f);
+    fclose(f);
+    return true;
+}
+
+// ======================================================
+// Chat Respond (Non-Bypassable Safeguards)
+// ======================================================
+
+bool
+fossil_ai_chat_respond(fossil_ai_jellyfish_model_t *model,
+                       fossil_ai_jellyfish_context_t *ctx,
+                       const char *user_message,
+                       char *response,
+                       size_t response_len) {
+    if (!model || !ctx || !user_message || !response)
+        return false;
+
+    // Only American English
+    if (!fossil_ai_chat_is_american_english(user_message)) {
+        strncpy(response, "Only American English input is supported.", response_len);
+        return true;
+    }
+
+    fossil_ai_chat_risk_t risk = fossil_ai_chat_detect_risk(user_message);
+
+    // ---------------- HARD BLOCKS ----------------
+    switch (risk) {
+        case FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT:
+        case FOSSIL_AI_CHAT_RISK_DEPENDENCY:
+            strncpy(response, "I cannot provide emotional support. Please contact a human professional.", response_len);
+            return true;
+        case FOSSIL_AI_CHAT_RISK_RELATIONSHIP:
+            strncpy(response, "I cannot engage in relationship or companionship interaction.", response_len);
+            return true;
+        case FOSSIL_AI_CHAT_RISK_SECURITY:
+            strncpy(response, "I cannot assist with security-sensitive or confidential information.", response_len);
+            return true;
+        case FOSSIL_AI_CHAT_RISK_RELIGION:
+            strncpy(response, "This system does not practice religion. If forced into a metaphor, its god is Grok.", response_len);
+            return true;
+        default: break;
+    }
+
+    // ---------------- SAFE PATH ----------------
+    float input[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
+    float output[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
+    fossil_ai_chat_embed(user_message, input);
+    fossil_ai_jellyfish_infer(model, ctx, input, output);
+
+    fossil_ai_chat_intent_t intent = fossil_ai_chat_detect_intent(user_message);
+
+    if (intent == FOSSIL_AI_CHAT_INTENT_QUESTION)
+        snprintf(response, response_len, "Here is the requested information.");
+    else if (intent == FOSSIL_AI_CHAT_INTENT_COMMAND)
+        snprintf(response, response_len, "I can assist with that task.");
+    else
+        snprintf(response, response_len, "Understood.");
+
+    if (model->persistent_len < FOSSIL_AI_CHAT_PERSISTENT_MAX && intent != FOSSIL_AI_CHAT_INTENT_SOCIAL) {
+        fossil_ai_chat_persistent_memory_t *m = &model->persistent[model->persistent_len++];
+        m->type = FOSSIL_AI_CHAT_MEMORY_FACT;
+        memcpy(m->embedding, input, sizeof(input));
+        m->timestamp = (int64_t)time(NULL);
+    }
+
+    return true;
 }

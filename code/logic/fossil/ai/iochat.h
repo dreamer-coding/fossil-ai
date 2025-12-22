@@ -41,6 +41,7 @@ extern "C"
 #define FOSSIL_AI_CHAT_PERSISTENT_MAX  256
 #define FOSSIL_AI_CHAT_MAX_TOKENS      128
 #define FOSSIL_AI_CHAT_MAX_TOKEN_LEN   32
+#define FOSSIL_AI_CHAT_HASH_SIZE       1024
 
 // ======================================================
 // Intent Classification

@@ -30,17 +30,45 @@
 #include <math.h>
 
 // ======================================================
-// Helpers
+// Helpers — Vector math
 // ======================================================
 
-// Simple L2 distance for attention
-static float fossil_ai_jellyfish_distance(const float *a, const float *b, size_t len) {
+static float fossil_ai_jellyfish_dot(const float *a, const float *b, size_t len) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < len; i++) sum += a[i] * b[i];
+    return sum;
+}
+
+static void fossil_ai_jellyfish_add_scaled(float *a, const float *b, float scale, size_t len) {
+    for (size_t i = 0; i < len; i++) a[i] += b[i] * scale;
+}
+
+static void fossil_ai_jellyfish_scale(float *a, float scale, size_t len) {
+    for (size_t i = 0; i < len; i++) a[i] *= scale;
+}
+
+static void fossil_ai_jellyfish_copy(float *dst, const float *src, size_t len) {
+    for (size_t i = 0; i < len; i++) dst[i] = src[i];
+}
+
+static float fossil_ai_jellyfish_l2_distance(const float *a, const float *b, size_t len) {
     float sum = 0.0f;
     for (size_t i = 0; i < len; i++) {
         float d = a[i] - b[i];
         sum += d * d;
     }
     return sqrtf(sum);
+}
+
+static void fossil_ai_jellyfish_softmax(const float *scores, float *out, size_t len) {
+    float max = scores[0];
+    for (size_t i = 1; i < len; i++) if (scores[i] > max) max = scores[i];
+    float sum = 0.0f;
+    for (size_t i = 0; i < len; i++) {
+        out[i] = expf(scores[i] - max);
+        sum += out[i];
+    }
+    for (size_t i = 0; i < len; i++) out[i] /= sum;
 }
 
 // ======================================================
@@ -54,7 +82,10 @@ fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_create_model(const char *name, 
     model->version = 1;
     model->input_size = input_size;
     model->output_size = output_size;
-    model->internal_state = NULL;
+
+    model->internal_state = calloc(input_size * output_size, sizeof(float)); // linear weights
+    if (!model->internal_state) { free(model); return NULL; }
+
     model->memory_len = 0;
     return model;
 }
@@ -82,38 +113,65 @@ void fossil_ai_jellyfish_free_context(fossil_ai_jellyfish_context_t *ctx) {
 }
 
 // ======================================================
-// Training / Memory
+// Training — simple linear regression with gradient descent
 // ======================================================
 
 bool fossil_ai_jellyfish_train(fossil_ai_jellyfish_model_t *model,
                                const float *inputs,
                                const float *targets,
                                size_t count) {
-    if (!model || !inputs || !targets) return false;
-    // Placeholder: adapt weights or embeddings
-    printf("[Jellyfish] Training %zu samples on model '%s'\n", count, model->name);
+    if (!model || !inputs || !targets || count == 0) return false;
+
+    float *weights = (float *)model->internal_state;
+    size_t in_size = model->input_size;
+    size_t out_size = model->output_size;
+    float lr = 0.01f;
+
+    for (size_t epoch = 0; epoch < 10; epoch++) {
+        for (size_t n = 0; n < count; n++) {
+            const float *x = inputs + n * in_size;
+            const float *y = targets + n * out_size;
+
+            float *y_hat = (float *)malloc(out_size * sizeof(float));
+            for (size_t j = 0; j < out_size; j++) {
+                y_hat[j] = 0.0f;
+                for (size_t i = 0; i < in_size; i++) {
+                    y_hat[j] += weights[j * in_size + i] * x[i];
+                }
+            }
+
+            // gradient descent
+            for (size_t j = 0; j < out_size; j++) {
+                float error = y_hat[j] - y[j];
+                for (size_t i = 0; i < in_size; i++) {
+                    weights[j * in_size + i] -= lr * error * x[i];
+                }
+            }
+            free(y_hat);
+        }
+    }
     return true;
 }
 
-// Add new memory with embedding
+// ======================================================
+// Memory — attention weighted retrieval
+// ======================================================
+
 bool fossil_ai_jellyfish_add_memory(fossil_ai_jellyfish_model_t *model,
                                     const float *input,
                                     const float *output,
                                     size_t embed_len) {
     if (!model || embed_len > FOSSIL_AI_JELLYFISH_EMBED_SIZE) return false;
-
     size_t idx = model->memory_len % FOSSIL_AI_JELLYFISH_MAX_MEMORY;
-    for (size_t i = 0; i < embed_len; i++) {
-        model->memory[idx].embedding[i] = input[i];
-        model->memory[idx].output[i] = output[i];
-    }
+    fossil_ai_jellyfish_copy(model->memory[idx].embedding, input, embed_len);
+    fossil_ai_jellyfish_copy(model->memory[idx].output, output, embed_len);
     model->memory[idx].timestamp = (int64_t)time(NULL);
     if (model->memory_len < FOSSIL_AI_JELLYFISH_MAX_MEMORY) model->memory_len++;
     return true;
 }
 
 // ======================================================
-// Inference / Attention
+// Inference — linear model + attention
 // ======================================================
 
 bool fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t *model,
@@ -121,31 +179,38 @@ bool fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t *model,
                                const float *input,
                                float *output) {
     if (!model || !input || !output) return false;
+    size_t in_size = model->input_size;
+    size_t out_size = model->output_size;
+    float *weights = (float *)model->internal_state;
 
-    // Attention: find closest memory vector
-    size_t best_idx = 0;
-    float best_dist = INFINITY;
-    for (size_t i = 0; i < model->memory_len; i++) {
-        float d = fossil_ai_jellyfish_distance(input, model->memory[i].embedding, FOSSIL_AI_JELLYFISH_EMBED_SIZE);
-        if (d < best_dist) {
-            best_dist = d;
-            best_idx = i;
+    // 1. Linear model
+    for (size_t j = 0; j < out_size; j++) {
+        output[j] = 0.0f;
+        for (size_t i = 0; i < in_size; i++) {
+            output[j] += weights[j * in_size + i] * input[i];
         }
     }
 
-    // If memory exists, blend output
+    // 2. Attention memory blending
     if (model->memory_len > 0) {
-        for (size_t i = 0; i < model->output_size; i++) {
-            output[i] = (i < FOSSIL_AI_JELLYFISH_EMBED_SIZE) ? model->memory[best_idx].output[i] : 0.0f;
+        float scores[FOSSIL_AI_JELLYFISH_MAX_MEMORY] = {0};
+        for (size_t m = 0; m < model->memory_len; m++) {
+            scores[m] = -fossil_ai_jellyfish_l2_distance(input, model->memory[m].embedding, out_size);
         }
-    } else {
-        for (size_t i = 0; i < model->output_size; i++) {
-            output[i] = (i < model->input_size) ? input[i] : 0.0f;
+        float attn[FOSSIL_AI_JELLYFISH_MAX_MEMORY];
+        fossil_ai_jellyfish_softmax(scores, attn, model->memory_len);
+
+        // blend memory
+        for (size_t j = 0; j < out_size; j++) {
+            float blend = 0.0f;
+            for (size_t m = 0; m < model->memory_len; m++) {
+                blend += model->memory[m].output[j] * attn[m];
+            }
+            output[j] = 0.5f * output[j] + 0.5f * blend; // blend linear + memory
         }
     }
 
-    // Add to memory
-    fossil_ai_jellyfish_add_memory(model, input, output, model->output_size);
+    fossil_ai_jellyfish_add_memory(model, input, output, out_size);
     ctx->timestamp = (int64_t)time(NULL);
     return true;
 }
@@ -170,6 +235,12 @@ fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_load_model(const char *filepath
     fossil_ai_jellyfish_model_t *model = (fossil_ai_jellyfish_model_t *)calloc(1, sizeof(fossil_ai_jellyfish_model_t));
     if (!model) { fclose(f); return NULL; }
     fread(model, sizeof(fossil_ai_jellyfish_model_t), 1, f);
+
+    // Reallocate internal state if needed
+    if (!model->internal_state) {
+        model->internal_state = calloc(model->input_size * model->output_size, sizeof(float));
+    }
+
     fclose(f);
     return model;
 }

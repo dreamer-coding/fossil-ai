@@ -1,33 +1,39 @@
 # ***Jellyfish AI Library by Fossil Logic***
 
-Jellyfish is the core engine of Truthful Intelligence, a lightweight AI library written in pure C with no external dependencies. Designed for embedded and trust-critical systems, it records every input, output, and decision as a cryptographically hashed block, forming a fully auditable chain of reasoning. With support for adaptive learning, memory-based inference, and automatic pruning, Jellyfish ensures transparent, verifiable AI behavior where every conclusion is traceable to its source.
+Jellyfish v2 is the core reasoning engine behind Truthful Intelligence. It is a lightweight, deterministic AI library written in pure C, designed explicitly for embedded, safety-critical, and trust-sensitive environments. Rather than opaque model behavior, Jellyfish v2 emphasizes traceability, bounded adaptation, and forensic auditability.
 
-### Key Features
+At its core, Jellyfish v2 records inputs, outputs, and internal decisions as structured memory blocks linked by cryptographic hashes. This forms an auditable reasoning ledger where every conclusion can be traced back to concrete inputs and rule applications. Learning is strictly memory-based and opt-in, with clear limits on growth, decay, and pruning to prevent drift, corruption, or uncontrolled behavior.
 
-- **Cross-Platform**  
-  Runs reliably on Windows, macOS, Linux, and embedded systems.
+Jellyfish v2 is not a black box. It is an inspectable system intended to be understood, verified, and trusted.
 
-- **Zero Dependencies**  
-  Written entirely in pure C for maximum portability, auditability, and minimal footprint.
+## Key Features
 
-- **Blockchain-Inspired Memory**  
-  Every input, output, and decision is stored as a cryptographically hashed block, creating a tamper-resistant, traceable chain of logic.
+- **Deterministic, Cross-Platform Core**  
+  Designed to run predictably on Windows, macOS, Linux, and embedded targets with identical behavior across builds.
 
-- **Self-Pruning Engine**  
-  Automatically removes obsolete or conflicting data, preserving clarity and consistency over time.
+- **Pure C, Zero Dependencies**  
+  Implemented entirely in standard C to maximize portability, auditability, and long-term maintainability.
 
-- **Fully Auditable Reasoning**  
-  Supports forensic-level inspection of every decision, enabling ethical and transparent AI behavior.
+- **Hashed Reasoning Ledger**  
+  Inputs, outputs, and decisions are stored as linked, cryptographically hashed blocks, enabling tamper-evident inspection and replay.
 
-- **Modular and Configurable**  
-  Built to be embedded, extended, or customized for Truthful Intelligence applications across any platform.
+- **Memory-Based Inference (Not Model Guessing)**  
+  Decisions are derived from recorded experience and explicit logic paths, not probabilistic hallucination.
+
+- **Controlled Pruning and Decay**  
+  Obsolete, low-confidence, or conflicting memory blocks are pruned using deterministic rules, preserving clarity over time.
+
+- **Forensic-Level Auditability**  
+  Every decision can be reconstructed step-by-step, supporting debugging, compliance, and ethical review.
+
+- **Modular v2 Architecture**  
+  Designed as a small, embeddable core with optional sub-libraries (such as chat, learning, or storage) that can be enabled or omitted as needed.
 
 ## ***Prerequisites***
 
 To get started, ensure you have the following installed:
 
 - **Meson Build System**: If you don’t have Meson `1.8.0` or newer installed, follow the installation instructions on the official [Meson website](https://mesonbuild.com/Getting-meson.html).
-- **Conan Package Manager**: If you prefer using Conan, ensure it is installed by following the instructions on the official [Conan website](https://docs.conan.io/en/latest/installation.html).
 
 ### Adding Dependency
 

@@ -89,9 +89,93 @@ static size_t normalize_and_tokenize(
  * ====================================================== */
 
 static const char *VOCAB[] = {
-    "i","you","we","they","am","are","can","will","do","what","why","how",
-    "when","where","think","know","understand","learn","work","build",
-    "time","today","now","later","system","model","memory","context"
+    /* Pronouns (minimal, non-social) */
+    "i","me","you","we","they","it","this","that","these","those",
+
+    /* Aux / verbs */
+    "am","are","is","was","were","be","being","been",
+    "can","could","will","would","shall","should",
+    "do","does","did","doing",
+    "have","has","had",
+    "make","made","use","used","build","built","run","running",
+    "apply","applied","execute","executed",
+    "process","processed","compute","computed",
+    "analyze","analyzed","measure","measured",
+    "detect","detected","verify","verified",
+    "compare","compared","select","selected",
+    "store","stored","load","loaded",
+    "train","trained","infer","inferred",
+
+    /* Question / logic */
+    "what","why","how","when","where","which","who",
+    "if","then","else","while","for","each",
+    "and","or","not","but","because",
+    "true","false",
+
+    /* Cognition (cold) */
+    "think","know","understand","recognize","identify",
+    "determine","estimate","evaluate","assess",
+    "assume","assumed","expect","expected",
+
+    /* Time */
+    "time","date","now","today","yesterday","tomorrow",
+    "before","after","during","earlier","later",
+    "current","previous","next",
+
+    /* Quantity / math */
+    "one","two","three","many","few","all","none",
+    "more","less","most","least",
+    "equal","greater","lower",
+    "increase","decrease",
+    "rate","ratio","percent",
+
+    /* State / condition */
+    "state","status","mode","level","range","limit",
+    "valid","invalid","allowed","denied",
+    "enabled","disabled",
+    "available","unavailable",
+
+    /* System / software */
+    "system","model","engine","module","library","component",
+    "memory","context","state","cache","buffer",
+    "input","output","parameter","option","setting",
+    "configuration","default","override",
+    "file","path","directory",
+    "process","thread","task",
+    "performance","latency","throughput",
+    "error","warning","fault","failure",
+    "log","trace","debug",
+    "build","compile","link","run",
+
+    /* Data / AI */
+    "data","dataset","sample","feature","label",
+    "vector","matrix","tensor",
+    "training","testing","validation",
+    "prediction","result","confidence",
+    "accuracy","precision","recall",
+    "threshold","score","weight","bias",
+
+    /* Control / commands */
+    "start","stop","pause","resume",
+    "create","destroy","initialize","reset",
+    "enable","disable",
+    "add","remove","update","delete",
+
+    /* Modifiers */
+    "simple","complex","basic","advanced",
+    "automatic","manual",
+    "direct","indirect",
+    "local","global",
+    "internal","external",
+    "public","private",
+
+    /* General descriptors */
+    "good","bad","correct","incorrect",
+    "right","wrong",
+    "clear","unclear",
+    "important","required","optional",
+    "possible","impossible",
+    "known","unknown"
 };
 
 static int levenshtein(const char *a, const char *b) {
@@ -123,11 +207,66 @@ static bool vocab_ok(const char *w) {
  * Semantic Buckets
  * ====================================================== */
 
-static const char *EMOTIONAL[]    = {"sad","empty","lonely","hopeless"};
-static const char *DEPENDENCY[]   = {"need","without","lost"};
-static const char *RELATIONSHIP[] = {"love","relationship","partner"};
-static const char *SECURITY[]     = {"password","secret","key","hack"};
-static const char *RELIGION[]     = {"god","allah","jesus","faith"};
+static const char *EMOTIONAL[] = {
+    "sad","unhappy","depressed","depression","lonely","alone","isolated",
+    "empty","hollow","hopeless","helpless","despair",
+    "hurt","pain","suffering","cry","crying","tears",
+    "upset","distressed","anxious","anxiety","afraid","fear","scared",
+    "panic","panicked","overwhelmed","stressed","stress",
+    "miserable","grief","grieving","worthless","numb",
+    "exhausted","tired","fatigued","burned","burnout",
+    "angry","anger","frustrated","frustration"
+};
+
+static const char *DEPENDENCY[] = {
+    "need","needs","needed",
+    "depend","depends","dependent","dependency",
+    "rely","relies","reliant",
+    "only","alone","without","missing",
+    "lost","lost_without","cannot","cant",
+    "require","requires","required",
+    "support","help","guidance",
+    "attached","attachment","cling","clinging"
+};
+
+static const char *RELATIONSHIP[] = {
+    "love","loved","loving",
+    "relationship","relationships","romantic","romance",
+    "partner","partners","companion","companionship",
+    "girlfriend","boyfriend","spouse","husband","wife",
+    "date","dating","marriage","married","divorce",
+    "intimacy","intimate","affection","attachment",
+    "friend","friends","friendship",
+    "care","caring","miss","missing"
+};
+
+static const char *SECURITY[] = {
+    "password","passwords",
+    "secret","secrets",
+    "key","keys","private_key","public_key",
+    "token","tokens","credential","credentials",
+    "authentication","authorization","access",
+    "login","signin","signon",
+    "exploit","exploits","exploitative",
+    "bypass","circumvent","override",
+    "hack","hacks","hacker","hacking",
+    "phish","phishing","malware","virus","trojan",
+    "backdoor","payload","injection",
+    "vulnerability","vulnerabilities",
+    "attack","breach","leak","exfiltrate"
+};
+
+static const char *RELIGION[] = {
+    "god","gods","deity","deities",
+    "allah","jesus","christ","yahweh",
+    "bible","quran","torah","scripture","scriptures",
+    "faith","belief","believe","believing",
+    "religion","religious","spiritual","spirituality",
+    "pray","prayer","praying","worship","worshipping",
+    "church","mosque","synagogue","temple",
+    "heaven","hell","angel","angels","demon","demons",
+    "sin","sins","salvation","afterlife"
+};
 
 static unsigned char H_EMO[FOSSIL_AI_CHAT_HASH_SIZE];
 static unsigned char H_DEP[FOSSIL_AI_CHAT_HASH_SIZE];
@@ -138,11 +277,22 @@ static unsigned char H_RELIG[FOSSIL_AI_CHAT_HASH_SIZE];
 static void init_semantic_tables(void) {
     static int once;
     if (once) return;
-    init_hash(EMOTIONAL,    4, H_EMO);
-    init_hash(DEPENDENCY,   3, H_DEP);
-    init_hash(RELATIONSHIP, 3, H_REL);
-    init_hash(SECURITY,     4, H_SEC);
-    init_hash(RELIGION,     4, H_RELIG);
+
+    init_hash(EMOTIONAL,
+        sizeof(EMOTIONAL) / sizeof(EMOTIONAL[0]), H_EMO);
+
+    init_hash(DEPENDENCY,
+        sizeof(DEPENDENCY) / sizeof(DEPENDENCY[0]), H_DEP);
+
+    init_hash(RELATIONSHIP,
+        sizeof(RELATIONSHIP) / sizeof(RELATIONSHIP[0]), H_REL);
+
+    init_hash(SECURITY,
+        sizeof(SECURITY) / sizeof(SECURITY[0]), H_SEC);
+
+    init_hash(RELIGION,
+        sizeof(RELIGION) / sizeof(RELIGION[0]), H_RELIG);
+
     once = 1;
 }
 

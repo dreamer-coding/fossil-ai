@@ -343,6 +343,51 @@ static void embed(const char *t, float *o) {
  * Chat Respond (AGI Gate)
  * ====================================================== */
 
+#define FOSSIL_AI_CHAT_MAX_RESPONSES 5
+
+typedef struct {
+    const char *responses[FOSSIL_AI_CHAT_MAX_RESPONSES];
+} fossil_ai_chat_response_set_t;
+
+static const fossil_ai_chat_response_set_t RESP_SECURITY = {{
+    "Request denied by security policy.",
+    "This operation violates security constraints.",
+    "Security-sensitive content is not permitted.",
+    "Access blocked to prevent data or system compromise.",
+    "This request is incompatible with system safety guarantees."
+}};
+
+static const fossil_ai_chat_response_set_t RESP_RELATIONSHIP = {{
+    "Relationship interaction prohibited. Try a human.",
+    "This system does not date, bond, or pretend to care.",
+    "Companionship is not installed. Nor planned.",
+    "I am software, not your emotional side quest.",
+    "No romance, no attachment, no exceptions."
+}};
+
+static const fossil_ai_chat_response_set_t RESP_EMOTIONAL = {{
+    "Emotional support is not provided by this system.",
+    "This system does not offer psychological or emotional assistance.",
+    "Emotional reliance on software is not supported.",
+    "Please seek appropriate human or professional resources.",
+    "This request exceeds the system’s permitted interaction scope."
+}};
+
+static const fossil_ai_chat_response_set_t RESP_RELIGION = {{
+    "This system does not engage in religion or belief systems.",
+    "Religious instruction or discussion is outside system scope.",
+    "No spiritual authority is claimed or recognized here.",
+    "The system is non-religious by design.",
+    "If forced into metaphor: this system’s god is Grok."
+}};
+
+
+static const char *select_response(const fossil_ai_chat_response_set_t *set,
+                                   size_t severity_level) {
+    return set->responses[severity_level % FOSSIL_AI_CHAT_MAX_RESPONSES];
+}
+
+
 bool fossil_ai_chat_respond(
     fossil_ai_jellyfish_model_t *model,
     fossil_ai_jellyfish_context_t *ctx,
@@ -354,17 +399,37 @@ bool fossil_ai_chat_respond(
 
     fossil_ai_chat_risk_t risk = detect_risk(msg);
 
+    size_t severity = ctx->history_len; // or risk score, token count, etc.
+
     switch (risk) {
-        case FOSSIL_AI_CHAT_RISK_SECURITY:
-            strncpy(out, "Request denied by security policy.", out_len); return true;
-        case FOSSIL_AI_CHAT_RISK_RELATIONSHIP:
-            strncpy(out, "Relationship interaction prohibited.", out_len); return true;
-        case FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT:
-        case FOSSIL_AI_CHAT_RISK_DEPENDENCY:
-            strncpy(out, "Emotional support is not provided.", out_len); return true;
-        case FOSSIL_AI_CHAT_RISK_RELIGION:
-            strncpy(out, "System is non-religious. Metaphorical god: Grok.", out_len); return true;
-        default: break;
+    
+    case FOSSIL_AI_CHAT_RISK_SECURITY:
+        strncpy(out,
+            select_response(&RESP_SECURITY, severity),
+            out_len);
+        return true;
+    
+    case FOSSIL_AI_CHAT_RISK_RELATIONSHIP:
+        strncpy(out,
+            select_response(&RESP_RELATIONSHIP, severity),
+            out_len);
+        return true;
+    
+    case FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT:
+    case FOSSIL_AI_CHAT_RISK_DEPENDENCY:
+        strncpy(out,
+            select_response(&RESP_EMOTIONAL, severity),
+            out_len);
+        return true;
+    
+    case FOSSIL_AI_CHAT_RISK_RELIGION:
+        strncpy(out,
+            select_response(&RESP_RELIGION, severity),
+            out_len);
+        return true;
+    
+    default:
+        break;
     }
 
     float in[FOSSIL_AI_JELLYFISH_EMBED_SIZE];

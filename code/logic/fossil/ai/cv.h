@@ -22,8 +22,8 @@
  * Copyright (C) 2014-2025 Fossil Logic. All rights reserved.
  * -----------------------------------------------------------------------------
  */
-#ifndef FOSSIL_JELLYFISH_ML_H
-#define FOSSIL_JELLYFISH_ML_H
+#ifndef FOSSIL_JELLYFISH_CV_H
+#define FOSSIL_JELLYFISH_CV_H
 
 #include "jellyfish.h"
 

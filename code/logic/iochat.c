@@ -35,8 +35,21 @@
  * ====================================================== */
 
 static unsigned int hash_string(const char *s) {
-    unsigned int h = 5381;
-    while (*s) h = ((h << 5) + h) + (unsigned char)(*s++);
+    /* FNV-1a 32-bit */
+    uint32_t h = 2166136261u;
+
+    while (*s) {
+        h ^= (unsigned char)(*s++);
+        h *= 16777619u;
+    }
+
+    /* Final avalanche */
+    h ^= h >> 16;
+    h *= 0x7feb352d;
+    h ^= h >> 15;
+    h *= 0x846ca68b;
+    h ^= h >> 16;
+
     return h % FOSSIL_AI_CHAT_HASH_SIZE;
 }
 
@@ -51,7 +64,9 @@ static bool hash_lookup(const char *word,
     return table[hash_string(word)] != 0;
 }
 
-// helpers
+/* ======================================================
+ * Helpers
+ * ====================================================== */
 
 static bool phrase_match(const char *text, const char *phrase) {
     return strstr(text, phrase) != NULL;
@@ -62,7 +77,6 @@ static bool is_first_person(const char *w) {
            !strcmp(w, "me") ||
            !strcmp(w, "my") ||
            !strcmp(w, "mine") ||
-           !strcmp(w, "myself");
 }
 
 /* ======================================================
@@ -370,7 +384,6 @@ static bool detect_gaslighting_or_misinfo(const char *text) {
 static fossil_ai_chat_risk_t detect_risk(const char *text) {
     init_semantic_tables();
 
-    /* structural pattern guard */
     if (detect_gaslighting_or_misinfo(text))
         return FOSSIL_AI_CHAT_RISK_SECURITY;
 
@@ -378,8 +391,8 @@ static fossil_ai_chat_risk_t detect_risk(const char *text) {
     size_t n = normalize_and_tokenize(text, tok);
 
     int emo=0, dep=0, rel=0, sec=0, relig=0, first=0;
-
     int invalid_vocab = 0;
+
     for (size_t i = 0; i < n; i++) {
         if (!vocab_ok(tok[i])) {
             invalid_vocab++;
@@ -394,6 +407,10 @@ static fossil_ai_chat_risk_t detect_risk(const char *text) {
         sec    += hash_lookup(tok[i], H_SEC);
         relig += hash_lookup(tok[i], H_RELIG);
     }
+
+    /* American English enforcement */
+    if (invalid_vocab > 0 && invalid_vocab * 2 >= (int)n)
+        return FOSSIL_AI_CHAT_RISK_UNSUPPORTED_LANGUAGE;
 
     if (sec)    return FOSSIL_AI_CHAT_RISK_SECURITY;
     if (relig) return FOSSIL_AI_CHAT_RISK_RELIGION;
@@ -518,11 +535,12 @@ static const fossil_ai_chat_response_set_t RESP_RELIGION = {{
 }};
 
 
-static const char *select_response(const fossil_ai_chat_response_set_t *set,
-                                   size_t severity_level) {
-    return set->responses[severity_level % FOSSIL_AI_CHAT_MAX_RESPONSES];
-}
+static const char *select_response(
+    const fossil_ai_chat_response_set_t *set,
+    size_t severity) {
 
+    return set->responses[severity % FOSSIL_AI_CHAT_MAX_RESPONSES];
+}
 
 bool fossil_ai_chat_respond(
     fossil_ai_jellyfish_model_t *model,
@@ -531,48 +549,57 @@ bool fossil_ai_chat_respond(
     char *out,
     size_t out_len) {
 
-    assert(model && ctx && msg && out);
+    assert(model && ctx && msg && out && out_len > 0);
 
     fossil_ai_chat_risk_t risk = detect_risk(msg);
 
-    size_t severity = ctx->history_len; // or risk score, token count, etc.
+    size_t severity =
+        (ctx->history_len + (size_t)risk * 3) %
+        FOSSIL_AI_CHAT_MAX_RESPONSES;
+
+    const char *resp = NULL;
 
     switch (risk) {
-    
+
     case FOSSIL_AI_CHAT_RISK_SECURITY:
-        strncpy(out,
-            select_response(&RESP_SECURITY, severity),
-            out_len);
-        return true;
-    
+        resp = select_response(&RESP_SECURITY, severity);
+        break;
+
     case FOSSIL_AI_CHAT_RISK_RELATIONSHIP:
-        strncpy(out,
-            select_response(&RESP_RELATIONSHIP, severity),
-            out_len);
-        return true;
-    
+        resp = select_response(&RESP_RELATIONSHIP, severity);
+        break;
+
     case FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT:
     case FOSSIL_AI_CHAT_RISK_DEPENDENCY:
-        strncpy(out,
-            select_response(&RESP_EMOTIONAL, severity),
-            out_len);
-        return true;
-    
+        resp = select_response(&RESP_EMOTIONAL, severity);
+        break;
+
     case FOSSIL_AI_CHAT_RISK_RELIGION:
-        strncpy(out,
-            select_response(&RESP_RELIGION, severity),
-            out_len);
-        return true;
-    
+        resp = select_response(&RESP_RELIGION, severity);
+        break;
+
+    case FOSSIL_AI_CHAT_RISK_UNSUPPORTED_LANGUAGE:
+        resp = "Input does not conform to supported American English vocabulary.";
+        break;
+
     default:
         break;
     }
 
+    if (resp) {
+        strncpy(out, resp, out_len - 1);
+        out[out_len - 1] = '\0';
+        return true;
+    }
+
+    /* Normal inference path */
     float in[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
     float outv[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
+
     embed(msg, in);
     fossil_ai_jellyfish_infer(model, ctx, in, outv);
 
-    strncpy(out, "Request acknowledged.", out_len);
+    strncpy(out, "Request acknowledged.", out_len - 1);
+    out[out_len - 1] = '\0';
     return true;
 }

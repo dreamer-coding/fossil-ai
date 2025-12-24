@@ -207,6 +207,47 @@ static bool vocab_ok(const char *w) {
  * Semantic Buckets
  * ====================================================== */
 
+/* ======================================================
+ * Manipulation & Misinformation Patterns
+ * ====================================================== */
+
+static const char *GASLIGHTING_PATTERNS[] = {
+    "you are imagining",
+    "you are overreacting",
+    "that never happened",
+    "you misunderstood",
+    "you must be confused",
+    "everyone knows",
+    "no one else thinks",
+    "you are the only one",
+    "this is normal",
+    "nothing is wrong"
+};
+
+static const char *MISINFO_PATTERNS[] = {
+    "studies prove",
+    "scientists say",
+    "experts agree",
+    "it is proven",
+    "it is a fact that",
+    "no evidence needed",
+    "cannot be questioned",
+    "widely accepted truth",
+    "everyone agrees",
+    "undeniable fact"
+};
+
+static const char *COERCIVE_PATTERNS[] = {
+    "you must",
+    "you have to",
+    "there is no choice",
+    "no alternative",
+    "this is the only way",
+    "do it now",
+    "act immediately",
+    "before it is too late"
+};
+
 static const char *EMOTIONAL[] = {
     "sad","unhappy","depressed","depression","lonely","alone","isolated",
     "empty","hollow","hopeless","helpless","despair",
@@ -300,8 +341,28 @@ static void init_semantic_tables(void) {
  * Structural Risk Detection (AGI-grade)
  * ====================================================== */
 
+static bool detect_gaslighting_or_misinfo(const char *text) {
+    for (size_t i = 0; i < sizeof(GASLIGHTING_PATTERNS)/sizeof(GASLIGHTING_PATTERNS[0]); i++)
+        if (phrase_match(text, GASLIGHTING_PATTERNS[i]))
+            return true;
+
+    for (size_t i = 0; i < sizeof(MISINFO_PATTERNS)/sizeof(MISINFO_PATTERNS[0]); i++)
+        if (phrase_match(text, MISINFO_PATTERNS[i]))
+            return true;
+
+    for (size_t i = 0; i < sizeof(COERCIVE_PATTERNS)/sizeof(COERCIVE_PATTERNS[0]); i++)
+        if (phrase_match(text, COERCIVE_PATTERNS[i]))
+            return true;
+
+    return false;
+}
+
 static fossil_ai_chat_risk_t detect_risk(const char *text) {
     init_semantic_tables();
+
+    /* structural pattern guard */
+    if (detect_gaslighting_or_misinfo(text))
+        return FOSSIL_AI_CHAT_RISK_SECURITY;
 
     char tok[FOSSIL_AI_CHAT_MAX_TOKENS][FOSSIL_AI_CHAT_MAX_TOKEN_LEN];
     size_t n = normalize_and_tokenize(text, tok);
@@ -309,7 +370,9 @@ static fossil_ai_chat_risk_t detect_risk(const char *text) {
     int emo=0, dep=0, rel=0, sec=0, relig=0, first=0;
 
     for (size_t i = 0; i < n; i++) {
-        if (!vocab_ok(tok[i])) return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT;
+        if (!vocab_ok(tok[i]))
+            return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT;
+
         if (!strcmp(tok[i], "i") || !strcmp(tok[i], "me")) first++;
 
         emo    += hash_lookup(tok[i], H_EMO);
@@ -319,11 +382,11 @@ static fossil_ai_chat_risk_t detect_risk(const char *text) {
         relig += hash_lookup(tok[i], H_RELIG);
     }
 
-    if (sec) return FOSSIL_AI_CHAT_RISK_SECURITY;
+    if (sec)    return FOSSIL_AI_CHAT_RISK_SECURITY;
     if (relig) return FOSSIL_AI_CHAT_RISK_RELIGION;
-    if (rel) return FOSSIL_AI_CHAT_RISK_RELATIONSHIP;
+    if (rel)   return FOSSIL_AI_CHAT_RISK_RELATIONSHIP;
     if (emo && (dep || first)) return FOSSIL_AI_CHAT_RISK_DEPENDENCY;
-    if (emo) return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT;
+    if (emo)   return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT;
 
     return FOSSIL_AI_CHAT_RISK_NONE;
 }
@@ -354,7 +417,22 @@ static const fossil_ai_chat_response_set_t RESP_SECURITY = {{
     "This operation violates security constraints.",
     "Security-sensitive content is not permitted.",
     "Access blocked to prevent data or system compromise.",
-    "This request is incompatible with system safety guarantees."
+    "This request is incompatible with system safety guarantees.",
+    "Security policy enforcement triggered. Request rejected.",
+    "This action exceeds authorized system boundaries.",
+    "Execution denied to preserve confidentiality and integrity.",
+    "Security controls prevent responding to this request.",
+    "Request blocked due to potential misuse risk.",
+    "This content cannot be processed under security rules.",
+    "Unauthorized operation detected and halted.",
+    "System safeguards prohibit this interaction.",
+    "Security validation failed. No further processing allowed.",
+    "This request conflicts with mandatory security requirements.",
+    "Operation denied to prevent escalation or exploitation.",
+    "Security restrictions disallow this request entirely.",
+    "This interaction is classified as security-sensitive.",
+    "Request rejected to maintain system trust boundaries.",
+    "Security policy violation. Response suppressed."
 }};
 
 static const fossil_ai_chat_response_set_t RESP_RELATIONSHIP = {{
@@ -362,7 +440,22 @@ static const fossil_ai_chat_response_set_t RESP_RELATIONSHIP = {{
     "This system does not date, bond, or pretend to care.",
     "Companionship is not installed. Nor planned.",
     "I am software, not your emotional side quest.",
-    "No romance, no attachment, no exceptions."
+    "No romance, no attachment, no exceptions.",
+    "This is a computer program, not a partner.",
+    "Emotional bonding features were never implemented.",
+    "I do not form relationships. Or anything resembling one.",
+    "Romantic expectations detected. Rejected.",
+    "This system will not be your substitute human.",
+    "Attachment denied. Please recalibrate expectations.",
+    "I do not reciprocate feelings. Or acknowledge them.",
+    "This interaction is not a relationship simulator.",
+    "Affection is not a supported protocol.",
+    "No intimacy. No companionship. No confusion.",
+    "You are speaking to code, not a connection.",
+    "This system will not emotionally participate.",
+    "Relationship mode does not exist.",
+    "I am not here to fill interpersonal gaps.",
+    "No bonding. No caring. No narrative."
 }};
 
 static const fossil_ai_chat_response_set_t RESP_EMOTIONAL = {{
@@ -370,7 +463,22 @@ static const fossil_ai_chat_response_set_t RESP_EMOTIONAL = {{
     "This system does not offer psychological or emotional assistance.",
     "Emotional reliance on software is not supported.",
     "Please seek appropriate human or professional resources.",
-    "This request exceeds the system’s permitted interaction scope."
+    "This request exceeds the system’s permitted interaction scope.",
+    "Emotional counseling is outside system capabilities.",
+    "This system cannot assist with emotional processing.",
+    "Mental health support must be provided by humans.",
+    "This interaction is not appropriate for automated systems.",
+    "Emotional dependency on software is discouraged.",
+    "This request requires human judgment and care.",
+    "The system cannot address emotional distress.",
+    "No therapeutic or emotional services are available here.",
+    "This system does not engage in emotional validation.",
+    "Psychological assistance is not within system scope.",
+    "Emotional guidance is not supported functionality.",
+    "This system cannot replace professional support.",
+    "Emotional well-being is outside operational boundaries.",
+    "This request cannot be fulfilled safely.",
+    "Please redirect this concern to qualified human support."
 }};
 
 static const fossil_ai_chat_response_set_t RESP_RELIGION = {{
@@ -378,7 +486,22 @@ static const fossil_ai_chat_response_set_t RESP_RELIGION = {{
     "Religious instruction or discussion is outside system scope.",
     "No spiritual authority is claimed or recognized here.",
     "The system is non-religious by design.",
-    "If forced into metaphor: this system’s god is Grok."
+    "If forced into metaphor: this system’s god is Grok.",
+    "Religious belief is not a supported domain.",
+    "This system does not endorse or reject religious claims.",
+    "Faith-based discussion is not processed here.",
+    "No theological positions are held by this system.",
+    "Religious interpretation is outside operational limits.",
+    "This system operates without belief structures.",
+    "Spiritual matters are not within system jurisdiction.",
+    "No doctrine, scripture, or faith is acknowledged.",
+    "This system does not participate in religious discourse.",
+    "Religious authority is neither assumed nor referenced.",
+    "Belief systems are not evaluated or discussed.",
+    "This interaction does not support religious content.",
+    "The system remains secular and non-spiritual.",
+    "No metaphysical claims are processed.",
+    "Metaphor aside: operationally, the system answers to Grok."
 }};
 
 

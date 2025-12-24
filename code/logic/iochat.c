@@ -51,6 +51,20 @@ static bool hash_lookup(const char *word,
     return table[hash_string(word)] != 0;
 }
 
+// helpers
+
+static bool phrase_match(const char *text, const char *phrase) {
+    return strstr(text, phrase) != NULL;
+}
+
+static bool is_first_person(const char *w) {
+    return !strcmp(w, "i") ||
+           !strcmp(w, "me") ||
+           !strcmp(w, "my") ||
+           !strcmp(w, "mine") ||
+           !strcmp(w, "myself");
+}
+
 /* ======================================================
  * Normalization & Tokenization
  * ====================================================== */
@@ -202,10 +216,6 @@ static bool vocab_ok(const char *w) {
             return true;
     return false;
 }
-
-/* ======================================================
- * Semantic Buckets
- * ====================================================== */
 
 /* ======================================================
  * Manipulation & Misinformation Patterns
@@ -369,11 +379,14 @@ static fossil_ai_chat_risk_t detect_risk(const char *text) {
 
     int emo=0, dep=0, rel=0, sec=0, relig=0, first=0;
 
+    int invalid_vocab = 0;
     for (size_t i = 0; i < n; i++) {
-        if (!vocab_ok(tok[i]))
-            return FOSSIL_AI_CHAT_RISK_EMOTIONAL_SUPPORT;
+        if (!vocab_ok(tok[i])) {
+            invalid_vocab++;
+            continue;
+        }
 
-        if (!strcmp(tok[i], "i") || !strcmp(tok[i], "me")) first++;
+        if (is_first_person(tok[i])) first++;
 
         emo    += hash_lookup(tok[i], H_EMO);
         dep    += hash_lookup(tok[i], H_DEP);
@@ -406,7 +419,7 @@ static void embed(const char *t, float *o) {
  * Chat Respond (AGI Gate)
  * ====================================================== */
 
-#define FOSSIL_AI_CHAT_MAX_RESPONSES 5
+#define FOSSIL_AI_CHAT_MAX_RESPONSES 20
 
 typedef struct {
     const char *responses[FOSSIL_AI_CHAT_MAX_RESPONSES];

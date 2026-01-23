@@ -27,6 +27,7 @@
 
 #include "jellyfish.h" // core AI guts
 #include "iochat.h"
+#include "data.h"
 #include "anom.h"
 #include "nlp.h"
 #include "ml.h"

@@ -31,7 +31,6 @@
 #include "anom.h"
 #include "nlp.h"
 #include "ml.h"
-#include "cv.h"
 #include "ts.h"
 
 #endif /* FOSSIL_JELLYFISH_AI_FRAMEWORK_H */

@@ -33,7 +33,7 @@
 // mock objects are set here.
 // * * * * * * * * * * * * * * * * * * * * * * * *
 
-FOSSIL_TEST_SUITE(c_jellyfish_fixture);
+FOSSIL_SUITE(c_jellyfish_fixture);
 
 FOSSIL_SETUP(c_jellyfish_fixture) {
     // Setup the test fixture

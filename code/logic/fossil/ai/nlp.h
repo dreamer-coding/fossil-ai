@@ -114,6 +114,7 @@ bool fossil_ai_nlp_embed(fossil_ai_jellyfish_model_t *model,
 #include <vector>
 #include <string>
 #include <array>
+#include <cstring>
 
 namespace fossil {
 
@@ -129,11 +130,13 @@ namespace fossil {
             // ------------------------------------------------------
             size_t tokenize(const std::string &text,
                             std::vector<std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN>> &tokens) const {
-                static std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN> c_tokens[FOSSIL_AI_NLP_MAX_TOKENS];
+                static char c_tokens[FOSSIL_AI_NLP_MAX_TOKENS][FOSSIL_AI_NLP_MAX_TOKEN_LEN];
                 size_t count = fossil_ai_nlp_tokenize(text.c_str(), c_tokens);
                 tokens.clear();
                 for (size_t i = 0; i < count; i++) {
-                    tokens.push_back(c_tokens[i]);
+                    std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN> arr{};
+                    std::memcpy(arr.data(), c_tokens[i], FOSSIL_AI_NLP_MAX_TOKEN_LEN);
+                    tokens.push_back(arr);
                 }
                 return count;
             }
@@ -159,10 +162,10 @@ namespace fossil {
                 }
         
                 void build(const std::vector<std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN>> &tokens, size_t order) {
-                    std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN> c_tokens[FOSSIL_AI_NLP_MAX_TOKENS];
+                    char c_tokens[FOSSIL_AI_NLP_MAX_TOKENS][FOSSIL_AI_NLP_MAX_TOKEN_LEN];
                     size_t n = std::min(tokens.size(), static_cast<size_t>(FOSSIL_AI_NLP_MAX_TOKENS));
                     for (size_t i = 0; i < n; i++)
-                        c_tokens[i] = tokens[i];
+                        std::memcpy(c_tokens[i], tokens[i].data(), FOSSIL_AI_NLP_MAX_TOKEN_LEN);
                     fossil_ai_nlp_build_ngram_table(c_tokens, n, order, &table);
                 }
             };
@@ -174,12 +177,15 @@ namespace fossil {
                                  size_t length,
                                  std::vector<std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN>> &output,
                                  float temperature = 1.0f) const {
-                static std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN> c_output[FOSSIL_AI_NLP_MAX_TOKENS];
+                char c_output[FOSSIL_AI_NLP_MAX_TOKENS][FOSSIL_AI_NLP_MAX_TOKEN_LEN];
                 size_t out_count = 0;
                 bool ok = fossil_ai_nlp_generate_markov(&ngram_table.table, length, c_output, &out_count, temperature);
                 output.clear();
-                for (size_t i = 0; i < out_count; i++)
-                    output.push_back(c_output[i]);
+                for (size_t i = 0; i < out_count; i++) {
+                    std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN> arr{};
+                    std::memcpy(arr.data(), c_output[i], FOSSIL_AI_NLP_MAX_TOKEN_LEN);
+                    output.push_back(arr);
+                }
                 return ok;
             }
         
@@ -187,19 +193,19 @@ namespace fossil {
             // Tone analysis
             // ------------------------------------------------------
             fossil_ai_nlp_tone_t detect_tone(const std::vector<std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN>> &tokens) const {
-                std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN> c_tokens[FOSSIL_AI_NLP_MAX_TOKENS];
+                char c_tokens[FOSSIL_AI_NLP_MAX_TOKENS][FOSSIL_AI_NLP_MAX_TOKEN_LEN];
                 size_t n = std::min(tokens.size(), static_cast<size_t>(FOSSIL_AI_NLP_MAX_TOKENS));
                 for (size_t i = 0; i < n; i++)
-                    c_tokens[i] = tokens[i];
+                    std::memcpy(c_tokens[i], tokens[i].data(), FOSSIL_AI_NLP_MAX_TOKEN_LEN);
                 return fossil_ai_nlp_detect_tone(c_tokens, n);
             }
         
             float detect_tone_drift(const std::vector<std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN>> &tokens,
                                     size_t paragraphs) const {
-                std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN> c_tokens[FOSSIL_AI_NLP_MAX_TOKENS];
+                char c_tokens[FOSSIL_AI_NLP_MAX_TOKENS][FOSSIL_AI_NLP_MAX_TOKEN_LEN];
                 size_t n = std::min(tokens.size(), static_cast<size_t>(FOSSIL_AI_NLP_MAX_TOKENS));
                 for (size_t i = 0; i < n; i++)
-                    c_tokens[i] = tokens[i];
+                    std::memcpy(c_tokens[i], tokens[i].data(), FOSSIL_AI_NLP_MAX_TOKEN_LEN);
                 return fossil_ai_nlp_detect_tone_drift(c_tokens, n, paragraphs);
             }
         
@@ -209,10 +215,10 @@ namespace fossil {
             bool embed(fossil_ai_jellyfish_model_t *model,
                        const std::vector<std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN>> &tokens,
                        float *embedding) const {
-                std::array<char, FOSSIL_AI_NLP_MAX_TOKEN_LEN> c_tokens[FOSSIL_AI_NLP_MAX_TOKENS];
+                char c_tokens[FOSSIL_AI_NLP_MAX_TOKENS][FOSSIL_AI_NLP_MAX_TOKEN_LEN];
                 size_t n = std::min(tokens.size(), static_cast<size_t>(FOSSIL_AI_NLP_MAX_TOKENS));
                 for (size_t i = 0; i < n; i++)
-                    c_tokens[i] = tokens[i];
+                    std::memcpy(c_tokens[i], tokens[i].data(), FOSSIL_AI_NLP_MAX_TOKEN_LEN);
                 return fossil_ai_nlp_embed(model, c_tokens, n, embedding);
             }
         };

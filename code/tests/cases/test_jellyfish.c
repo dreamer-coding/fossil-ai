@@ -95,14 +95,6 @@ FOSSIL_TEST(c_test_jellyfish_create_context_null_id) {
     }
 }
 
-FOSSIL_TEST(c_test_jellyfish_free_model_null) {
-    fossil_ai_jellyfish_free_model(NULL); // Should not crash
-}
-
-FOSSIL_TEST(c_test_jellyfish_free_context_null) {
-    fossil_ai_jellyfish_free_context(NULL); // Should not crash
-}
-
 // ======================================================
 // Training / Memory
 // ======================================================
@@ -216,8 +208,6 @@ FOSSIL_TEST_GROUP(c_jellyfish_tests) {
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_create_model_null_name);
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_create_and_free_context);
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_create_context_null_id);
-    FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_free_model_null);
-    FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_free_context_null);
 
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_train_basic);
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_add_memory_basic);

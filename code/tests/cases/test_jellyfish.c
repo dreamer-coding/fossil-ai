@@ -24,6 +24,7 @@
  */
 #include <fossil/pizza/framework.h>
 #include "fossil/ai/framework.h"
+#include <fossil/pizza/test.h>
 
 
 // * * * * * * * * * * * * * * * * * * * * * * * *
@@ -51,23 +52,28 @@ FOSSIL_TEARDOWN(c_jellyfish_fixture) {
 // as samples for library usage.
 // * * * * * * * * * * * * * * * * * * * * * * * *
 
-FOSSIL_TEST_CASE(c_test_jellyfish_model_create_and_free) {
+FOSSIL_TEST_CASE(c_test_jellyfish_model_create_and_free)
+{
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_create_model("test", 4, 2);
     ASSUME_ITS_TRUE(model != NULL);
     ASSUME_ITS_EQUAL_CSTR(model->name, "test");
     ASSUME_ITS_EQUAL_I32((int)model->input_size, 4);
     ASSUME_ITS_EQUAL_I32((int)model->output_size, 2);
     fossil_ai_jellyfish_free_model(model);
+    return;
 }
 
-FOSSIL_TEST_CASE(c_test_jellyfish_context_create_and_free) {
+FOSSIL_TEST_CASE(c_test_jellyfish_context_create_and_free)
+{
     fossil_ai_jellyfish_context_t *ctx = fossil_ai_jellyfish_create_context("sess42");
     ASSUME_ITS_TRUE(ctx != NULL);
     ASSUME_ITS_EQUAL_CSTR(ctx->session_id, "sess42");
     fossil_ai_jellyfish_free_context(ctx);
+    return;
 }
 
-FOSSIL_TEST_CASE(c_test_jellyfish_add_memory_and_retrieve) {
+FOSSIL_TEST_CASE(c_test_jellyfish_add_memory_and_retrieve)
+{
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_create_model("memtest", 3, 3);
     float input[3] = {1.0f, 2.0f, 3.0f};
     float output[3] = {4.0f, 5.0f, 6.0f};
@@ -79,9 +85,11 @@ FOSSIL_TEST_CASE(c_test_jellyfish_add_memory_and_retrieve) {
         ASSUME_ITS_TRUE(fabsf(model->memory[0].output[i] - output[i]) < 0.0001f);
     }
     fossil_ai_jellyfish_free_model(model);
+    return;
 }
 
-FOSSIL_TEST_CASE(c_test_jellyfish_train_and_infer) {
+FOSSIL_TEST_CASE(c_test_jellyfish_train_and_infer)
+{
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_create_model("train", 2, 1);
     float inputs[4] = {0.0f, 0.0f, 1.0f, 1.0f}; // 2 samples, 2 features each
     float targets[2] = {0.0f, 1.0f}; // 2 samples, 1 output each
@@ -97,9 +105,11 @@ FOSSIL_TEST_CASE(c_test_jellyfish_train_and_infer) {
 
     fossil_ai_jellyfish_free_context(ctx);
     fossil_ai_jellyfish_free_model(model);
+    return;
 }
 
-FOSSIL_TEST_CASE(c_test_jellyfish_save_and_load_model) {
+FOSSIL_TEST_CASE(c_test_jellyfish_save_and_load_model)
+{
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_create_model("persist", 2, 2);
     float input[2] = {0.5f, 0.5f};
     float output[2] = {1.0f, 0.0f};
@@ -123,9 +133,11 @@ FOSSIL_TEST_CASE(c_test_jellyfish_save_and_load_model) {
     fossil_ai_jellyfish_free_model(model);
     fossil_ai_jellyfish_free_model(loaded);
     remove(filepath);
+    return;
 }
 
-FOSSIL_TEST_CASE(c_test_jellyfish_infer_blends_with_memory) {
+FOSSIL_TEST_CASE(c_test_jellyfish_infer_blends_with_memory)
+{
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_create_model("blend", 2, 2);
     float input[2] = {0.2f, 0.8f};
     float output[2] = {0.9f, 0.1f};
@@ -142,6 +154,7 @@ FOSSIL_TEST_CASE(c_test_jellyfish_infer_blends_with_memory) {
 
     fossil_ai_jellyfish_free_context(ctx);
     fossil_ai_jellyfish_free_model(model);
+    return;
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * *

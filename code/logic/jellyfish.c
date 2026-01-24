@@ -38,20 +38,6 @@
 // Helpers — Vector math
 // ======================================================
 
-static float fossil_ai_jellyfish_dot(const float *a, const float *b, size_t len) {
-    float sum = 0.0f;
-    for (size_t i = 0; i < len; i++) sum += a[i] * b[i];
-    return sum;
-}
-
-static void fossil_ai_jellyfish_add_scaled(float *a, const float *b, float scale, size_t len) {
-    for (size_t i = 0; i < len; i++) a[i] += b[i] * scale;
-}
-
-static void fossil_ai_jellyfish_scale(float *a, float scale, size_t len) {
-    for (size_t i = 0; i < len; i++) a[i] *= scale;
-}
-
 static void fossil_ai_jellyfish_copy(float *dst, const float *src, size_t len) {
     for (size_t i = 0; i < len; i++) dst[i] = src[i];
 }

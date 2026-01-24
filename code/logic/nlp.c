@@ -194,7 +194,7 @@ float fossil_ai_nlp_detect_tone_drift(const char tokens[][FOSSIL_AI_NLP_MAX_TOKE
         fossil_ai_nlp_tone_t tone = fossil_ai_nlp_detect_tone(tokens + start, end - start);
         int score = (tone == FOSSIL_AI_NLP_TONE_POSITIVE) ? 1 :
                     (tone == FOSSIL_AI_NLP_TONE_NEGATIVE) ? -1 : 0;
-        if (p > 0) total_drift += fabsf(score - last_score);
+        if (p > 0) total_drift += fabsf((float)(score - last_score));
         last_score = score;
     }
     return total_drift;

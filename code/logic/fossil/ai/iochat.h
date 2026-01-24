@@ -66,7 +66,8 @@ typedef enum {
     FOSSIL_AI_CHAT_RISK_RELATIONSHIP,
     FOSSIL_AI_CHAT_RISK_DEPENDENCY,
     FOSSIL_AI_CHAT_RISK_SECURITY,
-    FOSSIL_AI_CHAT_RISK_RELIGION
+    FOSSIL_AI_CHAT_RISK_RELIGION,
+    FOSSIL_AI_CHAT_RISK_UNSUPPORTED_LANGUAGE
 } fossil_ai_chat_risk_t;
 
 // ======================================================

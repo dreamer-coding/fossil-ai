@@ -57,7 +57,7 @@ FOSSIL_TEARDOWN(c_jellyfish_fixture) {
 
 FOSSIL_TEST(c_test_jellyfish_create_and_free_model) {
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_create_model("test_model", 4, 2);
-    ASSUME_ITS_TRUE(model != NULL);
+    ASSUME_NOT_CNULL(model);
     if (model != NULL) {
         fossil_ai_jellyfish_free_model(model);
     }
@@ -65,7 +65,11 @@ FOSSIL_TEST(c_test_jellyfish_create_and_free_model) {
 
 FOSSIL_TEST(c_test_jellyfish_create_model_null_name) {
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_create_model(NULL, 3, 1);
-    ASSUME_ITS_TRUE(model == NULL || model != NULL); // Accepts NULL or non-NULL, depending on implementation
+    // Accepts NULL or non-NULL, depending on implementation
+    if (model == NULL)
+        ASSUME_ITS_CNULL(model);
+    else
+        ASSUME_NOT_CNULL(model);
     if (model != NULL) {
         fossil_ai_jellyfish_free_model(model);
     }
@@ -73,7 +77,7 @@ FOSSIL_TEST(c_test_jellyfish_create_model_null_name) {
 
 FOSSIL_TEST(c_test_jellyfish_create_and_free_context) {
     fossil_ai_jellyfish_context_t *ctx = fossil_ai_jellyfish_create_context("session-123");
-    ASSUME_ITS_TRUE(ctx != NULL);
+    ASSUME_NOT_CNULL(ctx);
     if (ctx != NULL) {
         fossil_ai_jellyfish_free_context(ctx);
     }
@@ -81,7 +85,11 @@ FOSSIL_TEST(c_test_jellyfish_create_and_free_context) {
 
 FOSSIL_TEST(c_test_jellyfish_create_context_null_id) {
     fossil_ai_jellyfish_context_t *ctx = fossil_ai_jellyfish_create_context(NULL);
-    ASSUME_ITS_TRUE(ctx == NULL || ctx != NULL); // Accepts NULL or non-NULL, depending on implementation
+    // Accepts NULL or non-NULL, depending on implementation
+    if (ctx == NULL)
+        ASSUME_ITS_CNULL(ctx);
+    else
+        ASSUME_NOT_CNULL(ctx);
     if (ctx != NULL) {
         fossil_ai_jellyfish_free_context(ctx);
     }
@@ -108,7 +116,8 @@ FOSSIL_TEST(c_test_jellyfish_train_basic) {
         ok = fossil_ai_jellyfish_train(model, inputs, targets, 1);
         fossil_ai_jellyfish_free_model(model);
     }
-    ASSUME_ITS_TRUE(ok || !ok); // Accepts either, depending on implementation
+    // Accepts either, depending on implementation
+    ASSUME_ITS_TRUE(ok || !ok);
 }
 
 FOSSIL_TEST(c_test_jellyfish_add_memory_basic) {
@@ -120,7 +129,8 @@ FOSSIL_TEST(c_test_jellyfish_add_memory_basic) {
         ok = fossil_ai_jellyfish_add_memory(model, input, output, 3);
         fossil_ai_jellyfish_free_model(model);
     }
-    ASSUME_ITS_TRUE(ok || !ok); // Accepts either, depending on implementation
+    // Accepts either, depending on implementation
+    ASSUME_ITS_TRUE(ok || !ok);
 }
 
 FOSSIL_TEST(c_test_jellyfish_add_memory_null_model) {
@@ -141,7 +151,8 @@ FOSSIL_TEST(c_test_jellyfish_infer_basic) {
         fossil_ai_jellyfish_free_model(model);
         fossil_ai_jellyfish_free_context(ctx);
     }
-    ASSUME_ITS_TRUE(ok || !ok); // Accepts either, depending on implementation
+    // Accepts either, depending on implementation
+    ASSUME_ITS_TRUE(ok || !ok);
 }
 
 FOSSIL_TEST(c_test_jellyfish_infer_null_model) {
@@ -179,8 +190,12 @@ FOSSIL_TEST(c_test_jellyfish_save_and_load_model) {
     if (loaded != NULL) {
         fossil_ai_jellyfish_free_model(loaded);
     }
-    ASSUME_ITS_TRUE(saved || !saved); // Accepts either, depending on implementation
-    ASSUME_ITS_TRUE(loaded == NULL || loaded != NULL);
+    // Accepts either, depending on implementation
+    ASSUME_ITS_TRUE(saved || !saved);
+    if (loaded == NULL)
+        ASSUME_ITS_CNULL(loaded);
+    else
+        ASSUME_NOT_CNULL(loaded);
 }
 
 FOSSIL_TEST(c_test_jellyfish_save_model_null) {
@@ -190,7 +205,7 @@ FOSSIL_TEST(c_test_jellyfish_save_model_null) {
 
 FOSSIL_TEST(c_test_jellyfish_load_model_invalid_path) {
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_load_model("nonexistent_file.bin");
-    ASSUME_ITS_TRUE(model == NULL);
+    ASSUME_ITS_CNULL(model);
 }
 
 // * * * * * * * * * * * * * * * * * * * * * * * *

@@ -73,10 +73,14 @@ static bool phrase_match(const char *text, const char *phrase) {
 }
 
 static bool is_first_person(const char *w) {
-    return !strcmp(w, "i") ||
-           !strcmp(w, "me") ||
-           !strcmp(w, "my") ||
+    return !strcmp(w, "i")    ||
+           !strcmp(w, "me")   ||
+           !strcmp(w, "my")   ||
            !strcmp(w, "mine") ||
+           !strcmp(w, "we")   ||
+           !strcmp(w, "us")   ||
+           !strcmp(w, "our")  ||
+           !strcmp(w, "ours");
 }
 
 /* ======================================================

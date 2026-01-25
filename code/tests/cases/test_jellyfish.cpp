@@ -57,8 +57,8 @@ FOSSIL_TEARDOWN(cpp_jellyfish_fixture) {
 
 FOSSIL_TEST(cpp_test_jellyfish_create_and_free_model) {
     fossil::ai::Jellyfish jf("test_model", 4, 2);
-    ASSUME_NOT_CNULL(jf.input_size());
-    ASSUME_NOT_CNULL(jf.output_size());
+    ASSUME_ITS_EQUAL_SIZE(4, jf.input_size());
+    ASSUME_ITS_EQUAL_SIZE(2, jf.output_size());
 }
 
 FOSSIL_TEST(cpp_test_jellyfish_create_model_null_name) {
@@ -70,13 +70,13 @@ FOSSIL_TEST(cpp_test_jellyfish_create_model_null_name) {
 
 FOSSIL_TEST(cpp_test_jellyfish_create_and_free_context) {
     fossil::ai::Jellyfish jf("session-123", 2, 2);
-    ASSUME_NOT_CNULL(jf.input_size());
+    ASSUME_ITS_EQUAL_SIZE(2, jf.input_size());
 }
 
 FOSSIL_TEST(cpp_test_jellyfish_create_context_null_id) {
     // The wrapper always creates a default session, so just check construction
     fossil::ai::Jellyfish jf("model", 1, 1);
-    ASSUME_NOT_CNULL(jf.input_size());
+    ASSUME_ITS_EQUAL_SIZE(1, jf.input_size());
 }
 
 // ======================================================

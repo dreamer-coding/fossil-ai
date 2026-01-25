@@ -140,7 +140,7 @@ bool fossil_ai_nlp_generate_markov(const fossil_ai_nlp_ngram_table_t *table,
         for (size_t i = 0; i < table->ngram_count; i++)
             total += powf((float)table->ngrams[i].count, 1.0f / fmaxf(temperature, 0.01f));
 
-        float r = ((float)rand() / RAND_MAX) * total;
+        float r = ((float)rand() / (float)RAND_MAX) * total;
         float sum = 0.0f;
         size_t selected = 0;
         for (size_t i = 0; i < table->ngram_count; i++) {

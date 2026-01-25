@@ -74,7 +74,7 @@ fossil_ai_ml_create_mlp(size_t layer_count,
         mlp->weights[i] = calloc(prev * curr, sizeof(float));
         // Initialize weights with small random values
         for (size_t j = 0; j < prev * curr; j++)
-            mlp->weights[i][j] = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
+            mlp->weights[i][j] = ((float)rand() / (float)RAND_MAX - 0.5f) * 0.1f;
     }
     return mlp;
 }

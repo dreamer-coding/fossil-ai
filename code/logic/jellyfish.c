@@ -130,7 +130,7 @@ bool fossil_ai_jellyfish_train(fossil_ai_jellyfish_model_t *model,
     float lr = 0.01f;
     float lambda = 0.001f; // L2 regularization
 
-    float *y_hat = (float *)calloc(out_size, sizeof(float));
+    float *y_hat = (float *)calloc(model->output_size, sizeof(float));
     if (!y_hat) return false;
 
     size_t *indices = (size_t *)malloc(count * sizeof(size_t));
@@ -150,10 +150,10 @@ bool fossil_ai_jellyfish_train(fossil_ai_jellyfish_model_t *model,
             const float *y = targets + n * out_size;
 
             // Forward pass
-            for (size_t j = 0; j < out_size; j++) {
+            for (size_t j = 0; j < model->output_size; j++) {
                 y_hat[j] = 0.0f;
-                for (size_t i = 0; i < in_size; i++) {
-                    y_hat[j] += weights[j * in_size + i] * x[i];
+                for (size_t i = 0; i < model->input_size; i++) {
+                    y_hat[j] += weights[j * model->input_size + i] * x[i];
                 }
             }
 
@@ -180,10 +180,14 @@ bool fossil_ai_jellyfish_add_memory(fossil_ai_jellyfish_model_t *model,
                                     const float *input,
                                     const float *output,
                                     size_t embed_len) {
-    if (!model || embed_len > FOSSIL_AI_JELLYFISH_EMBED_SIZE) return false;
+    if (!model || !input || !output) return false;
+    // Ensure embed_len does not exceed the embedding/output array size or model's output size
+    size_t safe_len = embed_len;
+    if (safe_len > FOSSIL_AI_JELLYFISH_EMBED_SIZE) safe_len = FOSSIL_AI_JELLYFISH_EMBED_SIZE;
+    if (model->output_size < safe_len) safe_len = model->output_size;
     size_t idx = model->memory_len % FOSSIL_AI_JELLYFISH_MAX_MEMORY;
-    fossil_ai_jellyfish_copy(model->memory[idx].embedding, input, embed_len);
-    fossil_ai_jellyfish_copy(model->memory[idx].output, output, embed_len);
+    fossil_ai_jellyfish_copy(model->memory[idx].embedding, input, safe_len);
+    fossil_ai_jellyfish_copy(model->memory[idx].output, output, safe_len);
     model->memory[idx].timestamp = (int64_t)time(NULL);
     if (model->memory_len < FOSSIL_AI_JELLYFISH_MAX_MEMORY) model->memory_len++;
     return true;
@@ -212,9 +216,10 @@ bool fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t *model,
 
     // 2. Attention memory blending
     if (model->memory_len > 0) {
+        size_t mem_vec_len = out_size < FOSSIL_AI_JELLYFISH_EMBED_SIZE ? out_size : FOSSIL_AI_JELLYFISH_EMBED_SIZE;
         float scores[FOSSIL_AI_JELLYFISH_MAX_MEMORY] = {0};
         for (size_t m = 0; m < model->memory_len; m++) {
-            scores[m] = -fossil_ai_jellyfish_l2_distance(input, model->memory[m].embedding, out_size);
+            scores[m] = -fossil_ai_jellyfish_l2_distance(input, model->memory[m].embedding, mem_vec_len);
         }
         float attn[FOSSIL_AI_JELLYFISH_MAX_MEMORY];
         fossil_ai_jellyfish_softmax(scores, attn, model->memory_len);
@@ -222,10 +227,13 @@ bool fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t *model,
         // blend memory
         for (size_t j = 0; j < out_size; j++) {
             float blend = 0.0f;
-            for (size_t m = 0; m < model->memory_len; m++) {
-                blend += model->memory[m].output[j] * attn[m];
+            if (j < mem_vec_len) {
+                for (size_t m = 0; m < model->memory_len; m++) {
+                    blend += model->memory[m].output[j] * attn[m];
+                }
+                output[j] = 0.5f * output[j] + 0.5f * blend; // blend linear + memory
             }
-            output[j] = 0.5f * output[j] + 0.5f * blend; // blend linear + memory
+            // If j >= mem_vec_len, leave output[j] as is (from linear model)
         }
     }
 
@@ -256,7 +264,9 @@ bool fossil_ai_jellyfish_save_model(const fossil_ai_jellyfish_model_t *model, co
     fwrite(&model->memory_len, sizeof(model->memory_len), 1, f);
 
     // Memory
-    fwrite(model->memory, sizeof(fossil_ai_jellyfish_memory_t), model->memory_len, f);
+    size_t mem_len = model->memory_len;
+    if (mem_len > FOSSIL_AI_JELLYFISH_MAX_MEMORY) mem_len = FOSSIL_AI_JELLYFISH_MAX_MEMORY;
+    fwrite(model->memory, sizeof(fossil_ai_jellyfish_memory_t), mem_len, f);
 
     // Internal state (weights)
     size_t weight_count = model->input_size * model->output_size;
@@ -288,7 +298,10 @@ fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_load_model(const char *filepath
     if (fread(&model->memory_len, sizeof(model->memory_len), 1, f) != 1) { free(model); fclose(f); return NULL; }
 
     // Memory
-    if (fread(model->memory, sizeof(fossil_ai_jellyfish_memory_t), model->memory_len, f) != model->memory_len) { free(model); fclose(f); return NULL; }
+    size_t mem_len = model->memory_len;
+    if (mem_len > FOSSIL_AI_JELLYFISH_MAX_MEMORY) mem_len = FOSSIL_AI_JELLYFISH_MAX_MEMORY;
+    if (fread(model->memory, sizeof(fossil_ai_jellyfish_memory_t), mem_len, f) != mem_len) { free(model); fclose(f); return NULL; }
+    model->memory_len = mem_len;
 
     // Internal state
     size_t weight_count = model->input_size * model->output_size;

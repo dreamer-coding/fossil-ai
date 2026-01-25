@@ -67,6 +67,8 @@ static void fossil_ai_jellyfish_softmax(const float *scores, float *out, size_t 
 // ======================================================
 
 fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_create_model(const char *name, size_t input_size, size_t output_size) {
+    if (!name || input_size == 0 || output_size == 0) return NULL;
+
     fossil_ai_jellyfish_model_t *model = (fossil_ai_jellyfish_model_t *)calloc(1, sizeof(fossil_ai_jellyfish_model_t));
     if (!model) return NULL;
     strncpy(model->name, name, sizeof(model->name)-1);
@@ -83,11 +85,13 @@ fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_create_model(const char *name, 
 
 void fossil_ai_jellyfish_free_model(fossil_ai_jellyfish_model_t *model) {
     if (!model) return;
-    free(model->internal_state);
+    if (model->internal_state) free(model->internal_state);
+    // No need to free model->memory as it's not dynamically allocated
     free(model);
 }
 
 fossil_ai_jellyfish_context_t *fossil_ai_jellyfish_create_context(const char *session_id) {
+    if (!session_id || session_id[0] == '\0') return NULL;
     fossil_ai_jellyfish_context_t *ctx = (fossil_ai_jellyfish_context_t *)calloc(1, sizeof(fossil_ai_jellyfish_context_t));
     if (!ctx) return NULL;
     strncpy(ctx->session_id, session_id, sizeof(ctx->session_id)-1);
@@ -99,7 +103,7 @@ fossil_ai_jellyfish_context_t *fossil_ai_jellyfish_create_context(const char *se
 
 void fossil_ai_jellyfish_free_context(fossil_ai_jellyfish_context_t *ctx) {
     if (!ctx) return;
-    free(ctx->history);
+    if (ctx->history) free(ctx->history);
     free(ctx);
 }
 
@@ -110,6 +114,7 @@ void fossil_ai_jellyfish_free_context(fossil_ai_jellyfish_context_t *ctx) {
 
 // Fisher-Yates shuffle for epochs
 static void shuffle_indices(size_t *indices, size_t n) {
+    if (!indices || n == 0) return;
     for (size_t i = n - 1; i > 0; i--) {
         size_t j = rand() % (i + 1);
         size_t tmp = indices[i];
@@ -127,10 +132,12 @@ bool fossil_ai_jellyfish_train(fossil_ai_jellyfish_model_t *model,
     float *weights = (float *)model->internal_state;
     size_t in_size = model->input_size;
     size_t out_size = model->output_size;
+    if (!weights || in_size == 0 || out_size == 0) return false;
+
     float lr = 0.01f;
     float lambda = 0.001f; // L2 regularization
 
-    float *y_hat = (float *)calloc(model->output_size, sizeof(float));
+    float *y_hat = (float *)calloc(out_size, sizeof(float));
     if (!y_hat) return false;
 
     size_t *indices = (size_t *)malloc(count * sizeof(size_t));
@@ -149,11 +156,13 @@ bool fossil_ai_jellyfish_train(fossil_ai_jellyfish_model_t *model,
             const float *x = inputs + n * in_size;
             const float *y = targets + n * out_size;
 
+            if (!x || !y) continue;
+
             // Forward pass
-            for (size_t j = 0; j < model->output_size; j++) {
+            for (size_t j = 0; j < out_size; j++) {
                 y_hat[j] = 0.0f;
-                for (size_t i = 0; i < model->input_size; i++) {
-                    y_hat[j] += weights[j * model->input_size + i] * x[i];
+                for (size_t i = 0; i < in_size; i++) {
+                    y_hat[j] += weights[j * in_size + i] * x[i];
                 }
             }
 
@@ -180,11 +189,12 @@ bool fossil_ai_jellyfish_add_memory(fossil_ai_jellyfish_model_t *model,
                                     const float *input,
                                     const float *output,
                                     size_t embed_len) {
-    if (!model || !input || !output) return false;
+    if (!model || !input || !output || embed_len == 0) return false;
     // Ensure embed_len does not exceed the embedding/output array size or model's output size
     size_t safe_len = embed_len;
     if (safe_len > FOSSIL_AI_JELLYFISH_EMBED_SIZE) safe_len = FOSSIL_AI_JELLYFISH_EMBED_SIZE;
     if (model->output_size < safe_len) safe_len = model->output_size;
+    if (safe_len == 0) return false;
     size_t idx = model->memory_len % FOSSIL_AI_JELLYFISH_MAX_MEMORY;
     fossil_ai_jellyfish_copy(model->memory[idx].embedding, input, safe_len);
     fossil_ai_jellyfish_copy(model->memory[idx].output, output, safe_len);
@@ -206,6 +216,8 @@ bool fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t *model,
     size_t out_size = model->output_size;
     float *weights = (float *)model->internal_state;
 
+    if (in_size == 0 || out_size == 0 || !weights) return false;
+
     // 1. Linear model
     for (size_t j = 0; j < out_size; j++) {
         output[j] = 0.0f;
@@ -221,7 +233,7 @@ bool fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t *model,
         for (size_t m = 0; m < model->memory_len; m++) {
             scores[m] = -fossil_ai_jellyfish_l2_distance(input, model->memory[m].embedding, mem_vec_len);
         }
-        float attn[FOSSIL_AI_JELLYFISH_MAX_MEMORY];
+        float attn[FOSSIL_AI_JELLYFISH_MAX_MEMORY] = {0};
         fossil_ai_jellyfish_softmax(scores, attn, model->memory_len);
 
         // blend memory
@@ -231,15 +243,27 @@ bool fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t *model,
                 for (size_t m = 0; m < model->memory_len; m++) {
                     blend += model->memory[m].output[j] * attn[m];
                 }
+                // If blend is NaN or inf, skip blending
+                if (isnan(blend) || isinf(blend)) continue;
                 output[j] = 0.5f * output[j] + 0.5f * blend; // blend linear + memory
             }
             // If j >= mem_vec_len, leave output[j] as is (from linear model)
         }
     }
 
-    fossil_ai_jellyfish_add_memory(model, input, output, out_size);
-    ctx->timestamp = (int64_t)time(NULL);
-    return true;
+    // Only add memory if output is valid (not all zeros, NaN, or inf)
+    bool valid = false;
+    for (size_t j = 0; j < out_size; j++) {
+        if (!isnan(output[j]) && !isinf(output[j]) && output[j] != 0.0f) {
+            valid = true;
+            break;
+        }
+    }
+    if (valid) {
+        fossil_ai_jellyfish_add_memory(model, input, output, out_size);
+    }
+    if (ctx) ctx->timestamp = (int64_t)time(NULL);
+    return valid;
 }
 
 // ======================================================

@@ -272,8 +272,8 @@ fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_load_model(const char *filepath
     if (!f) return NULL;
 
     uint32_t magic = 0, version = 0;
-    fread(&magic, sizeof(magic), 1, f);
-    fread(&version, sizeof(version), 1, f);
+    if (fread(&magic, sizeof(magic), 1, f) != 1) { fclose(f); return NULL; }
+    if (fread(&version, sizeof(version), 1, f) != 1) { fclose(f); return NULL; }
     if (magic != FOSSIL_AI_JELLYFISH_MAGIC || version != FOSSIL_AI_JELLYFISH_VERSION) {
         fclose(f);
         return NULL; // invalid file
@@ -282,18 +282,19 @@ fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_load_model(const char *filepath
     fossil_ai_jellyfish_model_t *model = (fossil_ai_jellyfish_model_t *)calloc(1, sizeof(fossil_ai_jellyfish_model_t));
     if (!model) { fclose(f); return NULL; }
 
-    fread(&model->input_size, sizeof(model->input_size), 1, f);
-    fread(&model->output_size, sizeof(model->output_size), 1, f);
-    fread(model->name, sizeof(model->name), 1, f);
-    fread(&model->memory_len, sizeof(model->memory_len), 1, f);
+    if (fread(&model->input_size, sizeof(model->input_size), 1, f) != 1) { free(model); fclose(f); return NULL; }
+    if (fread(&model->output_size, sizeof(model->output_size), 1, f) != 1) { free(model); fclose(f); return NULL; }
+    if (fread(model->name, sizeof(model->name), 1, f) != 1) { free(model); fclose(f); return NULL; }
+    if (fread(&model->memory_len, sizeof(model->memory_len), 1, f) != 1) { free(model); fclose(f); return NULL; }
 
     // Memory
-    fread(model->memory, sizeof(fossil_ai_jellyfish_memory_t), model->memory_len, f);
+    if (fread(model->memory, sizeof(fossil_ai_jellyfish_memory_t), model->memory_len, f) != model->memory_len) { free(model); fclose(f); return NULL; }
 
     // Internal state
     size_t weight_count = model->input_size * model->output_size;
     model->internal_state = calloc(weight_count, sizeof(float));
-    fread(model->internal_state, sizeof(float), weight_count, f);
+    if (!model->internal_state) { free(model); fclose(f); return NULL; }
+    if (fread(model->internal_state, sizeof(float), weight_count, f) != weight_count) { free(model->internal_state); free(model); fclose(f); return NULL; }
 
     fclose(f);
     return model;

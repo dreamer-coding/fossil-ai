@@ -154,8 +154,16 @@ fossil_ai_anom_t *fossil_ai_anom_load(const char *filepath) {
     fossil_ai_anom_t *detector = fossil_ai_anom_create();
     if (!detector) { fclose(f); return NULL; }
 
-    fread(&detector->history_len, sizeof(size_t), 1, f);
-    fread(detector->history, sizeof(fossil_ai_anom_record_t), detector->history_len, f);
+    if (fread(&detector->history_len, sizeof(size_t), 1, f) != 1) {
+        fclose(f);
+        fossil_ai_anom_free(detector);
+        return NULL;
+    }
+    if (fread(detector->history, sizeof(fossil_ai_anom_record_t), detector->history_len, f) != detector->history_len) {
+        fclose(f);
+        fossil_ai_anom_free(detector);
+        return NULL;
+    }
     fclose(f);
     return detector;
 }

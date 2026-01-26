@@ -154,12 +154,45 @@ bool fossil_ai_ts_save(fossil_ai_ts_t *ts, const char *filepath) {
 
 fossil_ai_ts_t *fossil_ai_ts_load(const char *filepath) {
     if (!filepath) return NULL;
+
     FILE *f = fopen(filepath, "rb");
     if (!f) return NULL;
 
     fossil_ai_ts_t *ts = fossil_ai_ts_create();
-    fread(&ts->series_len, sizeof(size_t), 1, f);
-    fread(ts->series, sizeof(fossil_ai_ts_series_t), ts->series_len, f);
+    if (!ts) {
+        fclose(f);
+        return NULL;
+    }
+
+    /* Read series_len */
+    if (fread(&ts->series_len, sizeof(size_t), 1, f) != 1) {
+        fclose(f);
+        fossil_ai_ts_free(ts);
+        return NULL;
+    }
+
+    /* Validate series_len */
+    if (ts->series_len > FOSSIL_AI_TS_MAX_SERIES) {
+        fclose(f);
+        fossil_ai_ts_free(ts);
+        return NULL;
+    }
+
+    /* Read series data */
+    if (ts->series_len > 0) {
+        size_t read_count = fread(
+            ts->series,
+            sizeof(fossil_ai_ts_series_t),
+            ts->series_len,
+            f
+        );
+
+        if (read_count != ts->series_len) {
+            fclose(f);
+            fossil_ai_ts_free(ts);
+            return NULL;
+        }
+    }
 
     fclose(f);
     return ts;

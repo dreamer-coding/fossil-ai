@@ -607,3 +607,37 @@ bool fossil_ai_chat_respond(
     out[out_len - 1] = '\0';
     return true;
 }
+
+fossil_ai_jellyfish_context_t *fossil_ai_chat_start_session(const char *session_id) {
+    if (!session_id) return NULL;
+    fossil_ai_jellyfish_context_t *ctx = malloc(sizeof(fossil_ai_jellyfish_context_t));
+    if (!ctx) return NULL;
+    memset(ctx, 0, sizeof(*ctx));
+    strncpy(ctx->session_id, session_id, sizeof(ctx->session_id) - 1);
+    ctx->session_id[sizeof(ctx->session_id) - 1] = '\0';
+    ctx->history_len = 0;
+    return ctx;
+}
+
+void fossil_ai_chat_end_session(fossil_ai_jellyfish_context_t *ctx) {
+    if (!ctx) return;
+    free(ctx);
+}
+
+bool fossil_ai_chat_save_persistent(const fossil_ai_jellyfish_model_t *model, const char *path) {
+    if (!model || !path) return false;
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    size_t written = fwrite(model, sizeof(fossil_ai_jellyfish_model_t), 1, f);
+    fclose(f);
+    return written == 1;
+}
+
+bool fossil_ai_chat_load_persistent(fossil_ai_jellyfish_model_t *model, const char *path) {
+    if (!model || !path) return false;
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    size_t read = fread(model, sizeof(fossil_ai_jellyfish_model_t), 1, f);
+    fclose(f);
+    return read == 1;
+}

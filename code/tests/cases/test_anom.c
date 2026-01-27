@@ -72,7 +72,6 @@ FOSSIL_TEST(c_test_anom_detect_statistical_basic) {
 }
 
 FOSSIL_TEST(c_test_anom_detect_statistical_null_args) {
-    float score = 0.0f;
     bool result = fossil_ai_anom_detect_statistical(NULL, NULL, 0, 1.0f, NULL);
     ASSUME_ITS_FALSE(result);
 }
@@ -88,13 +87,11 @@ FOSSIL_TEST(c_test_anom_detect_deviation_basic) {
 }
 
 FOSSIL_TEST(c_test_anom_detect_deviation_null_args) {
-    float score = 0.0f;
     bool result = fossil_ai_anom_detect_deviation(NULL, NULL, 0, NULL);
     ASSUME_ITS_FALSE(result);
 }
 
 FOSSIL_TEST(c_test_anom_detect_reconstruction_null_args) {
-    float score = 0.0f;
     bool result = fossil_ai_anom_detect_reconstruction(NULL, NULL, 0, NULL, NULL);
     ASSUME_ITS_FALSE(result);
 }

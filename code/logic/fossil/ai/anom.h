@@ -326,10 +326,10 @@ namespace fossil {
             fossil_ai_anom_t* native_handle() const { return detector_; }
 
             // Non-copyable, movable
-            Anomaly(const anomaly&) = delete;
-            Anomaly& operator=(const anomaly&) = delete;
+            Anomaly(const Anomaly&) = delete;
+            Anomaly& operator=(const Anomaly&) = delete;
             Anomaly(Anomaly&& other) noexcept : detector_(other.detector_) { other.detector_ = nullptr; }
-            Anomaly& operator=(anomaly&& other) noexcept
+            Anomaly& operator=(Anomaly&& other) noexcept
             {
                 if (this != &other)
                 {

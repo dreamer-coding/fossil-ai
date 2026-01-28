@@ -210,22 +210,53 @@ static const char *VOCAB[] = {
     "known","unknown"
 };
 
+#define LEV_MAX_LEN 32
+#define LEV_MAX_DIST 1
+
 static int levenshtein(const char *a, const char *b) {
-    size_t la = strlen(a), lb = strlen(b);
-    int d[la + 1][lb + 1];
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
 
-    for (size_t i = 0; i <= la; i++) d[i][0] = (int)i;
-    for (size_t j = 0; j <= lb; j++) d[0][j] = (int)j;
+    /* Hard cap: anything long is "far" */
+    if (la > LEV_MAX_LEN || lb > LEV_MAX_LEN)
+        return LEV_MAX_DIST + 1;
 
-    for (size_t i = 1; i <= la; i++)
+    /* Trivial cases */
+    if (a == b) return 0;
+    if (la == 0) return (int)lb;
+    if (lb == 0) return (int)la;
+
+    int prev[LEV_MAX_LEN + 1];
+    int curr[LEV_MAX_LEN + 1];
+
+    for (size_t j = 0; j <= lb; j++)
+        prev[j] = (int)j;
+
+    for (size_t i = 1; i <= la; i++) {
+        curr[0] = (int)i;
+        int row_min = curr[0];
+
         for (size_t j = 1; j <= lb; j++) {
-            int cost = a[i-1] == b[j-1] ? 0 : 1;
-            int m = d[i-1][j] + 1;
-            if (d[i][j-1] + 1 < m) m = d[i][j-1] + 1;
-            if (d[i-1][j-1] + cost < m) m = d[i-1][j-1] + cost;
-            d[i][j] = m;
+            int cost = (a[i - 1] != b[j - 1]);
+            int del  = prev[j] + 1;
+            int ins  = curr[j - 1] + 1;
+            int sub  = prev[j - 1] + cost;
+
+            int v = del < ins ? del : ins;
+            if (sub < v) v = sub;
+
+            curr[j] = v;
+            if (v < row_min) row_min = v;
         }
-    return d[la][lb];
+
+        /* Early exit: already worse than threshold */
+        if (row_min > LEV_MAX_DIST)
+            return LEV_MAX_DIST + 1;
+
+        memcpy(prev, curr, (lb + 1) * sizeof(int));
+    }
+
+    return prev[lb];
 }
 
 static bool vocab_ok(const char *w) {

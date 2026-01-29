@@ -33,179 +33,105 @@
 extern "C" {
 #endif
 
-/* ============================================================
- * Versioning
- * ============================================================ */
+/* ======================================================
+ * Constants
+ * ====================================================== */
 
-#define FOSSIL_AI_JELLYFISH_VERSION_MAJOR 0
-#define FOSSIL_AI_JELLYFISH_VERSION_MINOR 3
-#define FOSSIL_AI_JELLYFISH_VERSION_PATCH 0
+#define FOSSIL_AI_JELLYFISH_MAX_MEMORY 1024
+#define FOSSIL_AI_JELLYFISH_EMBED_SIZE 64
+#define FOSSIL_AI_JELLYFISH_MODEL_NAME_LEN 128
 
-const char *fossil_ai_jellyfish_version_string(void);
+/* ======================================================
+ * Types
+ * ====================================================== */
 
-/* ============================================================
- * Forward Declarations (Opaque Types)
- * ============================================================ */
+/* Memory vector for embeddings and attention outputs */
+typedef struct fossil_ai_jellyfish_memory_t {
+    float embedding[FOSSIL_AI_JELLYFISH_EMBED_SIZE]; // Embedding vector
+    float output[FOSSIL_AI_JELLYFISH_EMBED_SIZE];    // Output vector for attention
+    int64_t timestamp;                                // Timestamp of memory
+    char id[64];                                      // String ID
+} fossil_ai_jellyfish_memory_t;
 
-typedef struct fossil_ai_jellyfish_core_t     fossil_ai_jellyfish_core_t;
-typedef struct fossil_ai_jellyfish_model_t    fossil_ai_jellyfish_model_t;
-typedef struct fossil_ai_jellyfish_context_t  fossil_ai_jellyfish_context_t;
-typedef struct fossil_ai_jellyfish_backend_t  fossil_ai_jellyfish_backend_t;
-typedef struct fossil_ai_jellyfish_hardware_t fossil_ai_jellyfish_hardware_t;
-typedef struct fossil_ai_jellyfish_train_t    fossil_ai_jellyfish_train_t;
+/* Persistent model structure */
+typedef struct fossil_ai_jellyfish_model_t {
+    char name[FOSSIL_AI_JELLYFISH_MODEL_NAME_LEN];
+    uint64_t version;
+    size_t memory_count;
+    fossil_ai_jellyfish_memory_t memory[FOSSIL_AI_JELLYFISH_MAX_MEMORY];
+    bool trained;                                    // Has model been trained
+} fossil_ai_jellyfish_model_t;
 
-/* ============================================================
- * Error Handling
- * ============================================================ */
+/* Hardware and system info */
+typedef struct fossil_ai_jellyfish_system_info_t {
+    size_t ram_bytes;
+    size_t cpu_cores;
+    bool is_little_endian;
+} fossil_ai_jellyfish_system_info_t;
 
-typedef int32_t fossil_ai_jellyfish_status_t;
+/* ======================================================
+ * Initialization / Cleanup
+ * ====================================================== */
 
-#define FOSSIL_AI_JELLYFISH_OK            0
-#define FOSSIL_AI_JELLYFISH_ERR_GENERIC  -1
-#define FOSSIL_AI_JELLYFISH_ERR_NOMEM    -2
-#define FOSSIL_AI_JELLYFISH_ERR_IO       -3
-#define FOSSIL_AI_JELLYFISH_ERR_INVALID  -4
-#define FOSSIL_AI_JELLYFISH_ERR_UNSUP    -5
+/* Create a new AI model instance */
+fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_create_model(const char* name);
 
-const char *fossil_ai_jellyfish_status_string(fossil_ai_jellyfish_status_t status);
+/* Free a model instance */
+void fossil_ai_jellyfish_free_model(fossil_ai_jellyfish_model_t* model);
 
-/* ============================================================
- * Core Lifecycle
- * ============================================================ */
+/* ======================================================
+ * Model Persistence
+ * ====================================================== */
 
-fossil_ai_jellyfish_core_t *fossil_ai_jellyfish_core_create(void);
+/* Save model to file */
+bool fossil_ai_jellyfish_save_model(const fossil_ai_jellyfish_model_t* model, const char* path);
 
-void fossil_ai_jellyfish_core_destroy(fossil_ai_jellyfish_core_t *core);
+/* Load model from file */
+fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_load_model(const char* path);
 
-/* ============================================================
- * Hardware Awareness
- * ============================================================ */
+/* ======================================================
+ * Memory Management
+ * ====================================================== */
 
-fossil_ai_jellyfish_hardware_t *fossil_ai_jellyfish_hardware_detect(void);
+/* Add memory vector to model */
+bool fossil_ai_jellyfish_add_memory(fossil_ai_jellyfish_model_t* model, const float* embedding, const float* output, const char* id, int64_t timestamp);
 
-void fossil_ai_jellyfish_hardware_destroy(fossil_ai_jellyfish_hardware_t *hw);
+/* Retrieve memory by string ID */
+fossil_ai_jellyfish_memory_t* fossil_ai_jellyfish_get_memory(const fossil_ai_jellyfish_model_t* model, const char* id);
 
-bool fossil_ai_jellyfish_hardware_has_cpu(const fossil_ai_jellyfish_hardware_t *hw);
+/* ======================================================
+ * Training / Inference
+ * ====================================================== */
 
-bool fossil_ai_jellyfish_hardware_has_gpu(const fossil_ai_jellyfish_hardware_t *hw);
+/* Train the model with current memory (incremental) */
+bool fossil_ai_jellyfish_train_model(fossil_ai_jellyfish_model_t* model);
 
-const char *fossil_ai_jellyfish_hardware_summary(const fossil_ai_jellyfish_hardware_t *hw);
+/* Predict output embedding from input embedding */
+bool fossil_ai_jellyfish_predict(const fossil_ai_jellyfish_model_t* model, const float* input_embedding, float* output_embedding);
 
-/* ============================================================
- * Backend Management (CPU / GPU / Custom)
- * ============================================================ */
+/* ======================================================
+ * System / Hardware Awareness
+ * ====================================================== */
 
-fossil_ai_jellyfish_backend_t *fossil_ai_jellyfish_backend_create(const char *backend_id);
+/* Detect system endianness */
+bool fossil_ai_jellyfish_is_little_endian(void);
 
-void fossil_ai_jellyfish_backend_destroy(fossil_ai_jellyfish_backend_t *backend);
+/* Retrieve system info */
+fossil_ai_jellyfish_system_info_t fossil_ai_jellyfish_get_system_info(void);
 
-fossil_ai_jellyfish_status_t fossil_ai_jellyfish_core_attach_backend(
-    fossil_ai_jellyfish_core_t *core,
-    fossil_ai_jellyfish_backend_t *backend
-);
+/* ======================================================
+ * Utility / Hashing
+ * ====================================================== */
 
-fossil_ai_jellyfish_backend_t *fossil_ai_jellyfish_core_select_backend(
-    fossil_ai_jellyfish_core_t *core,
-    const char *backend_id /* NULL = auto */
-);
+/* Simple FNV-1a 32-bit hash for strings */
+uint32_t fossil_ai_jellyfish_hash_string(const char* s);
 
-/* ============================================================
- * Context & Time Awareness
- * ============================================================ */
+/* ======================================================
+ * Auto-Detection
+ * ====================================================== */
 
-fossil_ai_jellyfish_context_t *fossil_ai_jellyfish_context_create(const char *context_id);
-
-void fossil_ai_jellyfish_context_destroy(fossil_ai_jellyfish_context_t *ctx);
-
-void fossil_ai_jellyfish_context_set_timestamp(
-    fossil_ai_jellyfish_context_t *ctx,
-    int64_t unix_time_ns
-);
-
-void fossil_ai_jellyfish_context_set_kv(
-    fossil_ai_jellyfish_context_t *ctx,
-    const char *key,
-    const char *value
-);
-
-const char *fossil_ai_jellyfish_context_get_kv(
-    const fossil_ai_jellyfish_context_t *ctx,
-    const char *key
-);
-
-/* ============================================================
- * Model Management (Persistent)
- * ============================================================ */
-
-fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_model_create(
-    const char *model_id,
-    const char *architecture_id
-);
-
-void fossil_ai_jellyfish_model_destroy(fossil_ai_jellyfish_model_t *model);
-
-fossil_ai_jellyfish_status_t fossil_ai_jellyfish_model_save(
-    const fossil_ai_jellyfish_model_t *model,
-    const char *path
-);
-
-fossil_ai_jellyfish_model_t *
-fossil_ai_jellyfish_model_load(const char *path);
-
-/* ============================================================
- * Inference
- * ============================================================ */
-
-fossil_ai_jellyfish_status_t fossil_ai_jellyfish_model_run(
-    fossil_ai_jellyfish_model_t *model,
-    fossil_ai_jellyfish_backend_t *backend,
-    fossil_ai_jellyfish_context_t *ctx,
-    const void *input,
-    size_t input_size,
-    void *output,
-    size_t output_size
-);
-
-/* ============================================================
- * Training
- * ============================================================ */
-
-fossil_ai_jellyfish_train_t *fossil_ai_jellyfish_train_create(
-    fossil_ai_jellyfish_model_t *model,
-    const char *trainer_id
-);
-
-void fossil_ai_jellyfish_train_destroy(fossil_ai_jellyfish_train_t *train);
-
-fossil_ai_jellyfish_status_t fossil_ai_jellyfish_train_step(
-    fossil_ai_jellyfish_train_t *train,
-    const void *input,
-    size_t input_size,
-    const void *expected,
-    size_t expected_size
-);
-
-fossil_ai_jellyfish_status_t fossil_ai_jellyfish_train_finalize(
-    fossil_ai_jellyfish_train_t *train
-);
-
-/* ============================================================
- * Introspection (Cold, Explicit)
- * ============================================================ */
-
-const char *fossil_ai_jellyfish_model_id(
-    const fossil_ai_jellyfish_model_t *model
-);
-
-const char *fossil_ai_jellyfish_model_architecture(
-    const fossil_ai_jellyfish_model_t *model
-);
-
-uint64_t
-fossil_ai_jellyfish_model_parameter_count(
-    const fossil_ai_jellyfish_model_t *model
-);
-
+/* Detect and report AI model capabilities */
+void fossil_ai_jellyfish_detect_capabilities(fossil_ai_jellyfish_model_t* model);
 
 #ifdef __cplusplus
 }

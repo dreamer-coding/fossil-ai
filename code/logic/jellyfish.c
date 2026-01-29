@@ -23,7 +23,6 @@
  * -----------------------------------------------------------------------------
  */
 #include "fossil/ai/jellyfish.h"
-#include "jellyfish.h"
 
 #include <stdlib.h>
 #include <string.h>

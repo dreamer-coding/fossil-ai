@@ -337,3 +337,55 @@ void fossil_ai_jellyfish_detect_capabilities(fossil_ai_jellyfish_model_t* model)
 
     printf("=== End of Capabilities ===\n");
 }
+
+/* ======================================================
+ * Utility: compute embedding magnitude
+ * ====================================================== */
+static float fossil_ai_jellyfish_embedding_magnitude(const float* embedding) {
+    float mag = 0.0f;
+    for (size_t i = 0; i < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++i)
+        mag += embedding[i] * embedding[i];
+    return sqrtf(mag);
+}
+
+/* ======================================================
+ * Audit function
+ * ====================================================== */
+void fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_model_t* model) {
+    if (!model) return;
+
+    printf("=== Jellyfish AI Model Audit ===\n");
+
+    // Model metadata
+    printf("Model Name       : %s\n", model->name);
+    printf("Model Version    : %llu\n", (unsigned long long)model->version);
+    printf("Trained          : %s\n", model->trained ? "yes" : "no");
+    printf("Memory Count     : %zu / %d\n", model->memory_count, FOSSIL_AI_JELLYFISH_MAX_MEMORY);
+
+    // Memory overview
+    printf("---- Memory Vectors ----\n");
+    for (size_t i = 0; i < model->memory_count; ++i) {
+        const fossil_ai_jellyfish_memory_t* mem = &model->memory[i];
+        float embed_mag = fossil_ai_jellyfish_embedding_magnitude(mem->embedding);
+        printf("[%zu] ID: %s | Timestamp: %lld | Embedding Norm: %.4f\n",
+               i, mem->id, (long long)mem->timestamp, embed_mag);
+    }
+
+    // Training audit
+    printf("---- Training Audit ----\n");
+    if (model->trained) {
+        printf("Model is trained.\n");
+        printf("Memory vectors ready for k-NN prediction: %zu\n", model->memory_count);
+    } else {
+        printf("Model not trained yet.\n");
+    }
+
+    // System / hardware info
+    printf("---- Hardware Info ----\n");
+    fossil_ai_jellyfish_system_info_t sysinfo = fossil_ai_jellyfish_get_system_info();
+    printf("CPU Cores        : %zu\n", sysinfo.cpu_cores);
+    printf("RAM              : %zu bytes\n", sysinfo.ram_bytes);
+    printf("Endianness       : %s\n", sysinfo.is_little_endian ? "Little" : "Big");
+
+    printf("=== End of Audit ===\n");
+}

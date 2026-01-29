@@ -133,6 +133,8 @@ uint32_t fossil_ai_jellyfish_hash_string(const char* s);
 /* Detect and report AI model capabilities */
 void fossil_ai_jellyfish_detect_capabilities(fossil_ai_jellyfish_model_t* model);
 
+void fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_model_t* model);
+
 #ifdef __cplusplus
 }
 #include <string>

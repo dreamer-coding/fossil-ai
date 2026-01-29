@@ -23,316 +23,392 @@
  * -----------------------------------------------------------------------------
  */
 #include "fossil/ai/jellyfish.h"
+#include "jellyfish.h"
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
-#include <math.h>
-#include <stdint.h>
 
-#define FOSSIL_AI_JELLYFISH_MAGIC 0x4A454C59 // 'JELY'
-#define FOSSIL_AI_JELLYFISH_VERSION 1
+/* ============================================================
+ * Internal Structures
+ * ============================================================ */
 
+struct fossil_ai_jellyfish_core_t {
+    fossil_ai_jellyfish_backend_t *backend;
+};
 
-// ======================================================
-// Helpers — Vector math
-// ======================================================
+struct fossil_ai_jellyfish_backend_t {
+    char *backend_id;
+};
 
-static void fossil_ai_jellyfish_copy(float *dst, const float *src, size_t len) {
-    for (size_t i = 0; i < len; i++) dst[i] = src[i];
+struct fossil_ai_jellyfish_hardware_t {
+    bool has_cpu;
+    bool has_gpu;
+};
+
+struct fossil_ai_jellyfish_context_t {
+    char *context_id;
+    int64_t timestamp_ns;
+
+    /* simple kv store (flat, cold, dumb) */
+    char **keys;
+    char **values;
+    size_t count;
+};
+
+struct fossil_ai_jellyfish_model_t {
+    char *model_id;
+    char *architecture_id;
+
+    void  *parameters;
+    size_t parameter_size;
+};
+
+struct fossil_ai_jellyfish_train_t {
+    fossil_ai_jellyfish_model_t *model;
+    char *trainer_id;
+};
+
+/* ============================================================
+ * Versioning
+ * ============================================================ */
+
+const char *
+fossil_ai_jellyfish_version_string(void) {
+    return "jellyfish 0.1.0";
 }
 
-static float fossil_ai_jellyfish_l2_distance(const float *a, const float *b, size_t len) {
-    float sum = 0.0f;
-    for (size_t i = 0; i < len; i++) {
-        float d = a[i] - b[i];
-        sum += d * d;
+/* ============================================================
+ * Status Strings
+ * ============================================================ */
+
+const char *
+fossil_ai_jellyfish_status_string(fossil_ai_jellyfish_status_t status) {
+    switch (status) {
+        case FOSSIL_AI_JELLYFISH_OK:           return "OK";
+        case FOSSIL_AI_JELLYFISH_ERR_GENERIC:  return "Generic error";
+        case FOSSIL_AI_JELLYFISH_ERR_NOMEM:    return "Out of memory";
+        case FOSSIL_AI_JELLYFISH_ERR_IO:       return "I/O error";
+        case FOSSIL_AI_JELLYFISH_ERR_INVALID:  return "Invalid argument";
+        case FOSSIL_AI_JELLYFISH_ERR_UNSUP:    return "Unsupported";
+        default:                              return "Unknown error";
     }
-    return sqrtf(sum);
 }
 
-static void fossil_ai_jellyfish_softmax(const float *scores, float *out, size_t len) {
-    float max = scores[0];
-    for (size_t i = 1; i < len; i++) if (scores[i] > max) max = scores[i];
-    float sum = 0.0f;
-    for (size_t i = 0; i < len; i++) {
-        out[i] = expf(scores[i] - max);
-        sum += out[i];
-    }
-    for (size_t i = 0; i < len; i++) out[i] /= sum;
+/* ============================================================
+ * Core Lifecycle
+ * ============================================================ */
+
+fossil_ai_jellyfish_core_t *
+fossil_ai_jellyfish_core_create(void) {
+    return calloc(1, sizeof(fossil_ai_jellyfish_core_t));
 }
 
-// ======================================================
-// Model / Context Management
-// ======================================================
-
-fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_create_model(const char *name, size_t input_size, size_t output_size) {
-    if (!name || input_size == 0 || output_size == 0) return NULL;
-
-    fossil_ai_jellyfish_model_t *model = (fossil_ai_jellyfish_model_t *)calloc(1, sizeof(fossil_ai_jellyfish_model_t));
-    if (!model) return NULL;
-    strncpy(model->name, name, sizeof(model->name)-1);
-    model->version = 1;
-    model->input_size = input_size;
-    model->output_size = output_size;
-
-    model->internal_state = calloc(input_size * output_size, sizeof(float)); // linear weights
-    if (!model->internal_state) { free(model); return NULL; }
-
-    model->memory_len = 0;
-    return model;
+void
+fossil_ai_jellyfish_core_destroy(fossil_ai_jellyfish_core_t *core) {
+    free(core);
 }
 
-void fossil_ai_jellyfish_free_model(fossil_ai_jellyfish_model_t *model) {
-    if (!model) return;
-    if (model->internal_state) free(model->internal_state);
-    // No need to free model->memory as it's not dynamically allocated
-    free(model);
+/* ============================================================
+ * Hardware Awareness
+ * ============================================================ */
+
+fossil_ai_jellyfish_hardware_t *
+fossil_ai_jellyfish_hardware_detect(void) {
+    fossil_ai_jellyfish_hardware_t *hw = calloc(1, sizeof(*hw));
+    if (!hw) return NULL;
+
+    hw->has_cpu = true;
+    hw->has_gpu = false; /* stub — GPU probing lives elsewhere */
+
+    return hw;
 }
 
-fossil_ai_jellyfish_context_t *fossil_ai_jellyfish_create_context(const char *session_id) {
-    if (!session_id || session_id[0] == '\0') return NULL;
-    fossil_ai_jellyfish_context_t *ctx = (fossil_ai_jellyfish_context_t *)calloc(1, sizeof(fossil_ai_jellyfish_context_t));
+void
+fossil_ai_jellyfish_hardware_destroy(fossil_ai_jellyfish_hardware_t *hw) {
+    free(hw);
+}
+
+bool
+fossil_ai_jellyfish_hardware_has_cpu(const fossil_ai_jellyfish_hardware_t *hw) {
+    return hw && hw->has_cpu;
+}
+
+bool
+fossil_ai_jellyfish_hardware_has_gpu(const fossil_ai_jellyfish_hardware_t *hw) {
+    return hw && hw->has_gpu;
+}
+
+const char *
+fossil_ai_jellyfish_hardware_summary(const fossil_ai_jellyfish_hardware_t *hw) {
+    if (!hw) return "no hardware";
+
+    if (hw->has_cpu && hw->has_gpu) return "cpu+gpu";
+    if (hw->has_cpu)               return "cpu";
+    if (hw->has_gpu)               return "gpu";
+    return "none";
+}
+
+/* ============================================================
+ * Backend Management
+ * ============================================================ */
+
+fossil_ai_jellyfish_backend_t *
+fossil_ai_jellyfish_backend_create(const char *backend_id) {
+    if (!backend_id) return NULL;
+
+    fossil_ai_jellyfish_backend_t *b = calloc(1, sizeof(*b));
+    if (!b) return NULL;
+
+    b->backend_id = strdup(backend_id);
+    return b;
+}
+
+void
+fossil_ai_jellyfish_backend_destroy(fossil_ai_jellyfish_backend_t *backend) {
+    if (!backend) return;
+    free(backend->backend_id);
+    free(backend);
+}
+
+fossil_ai_jellyfish_status_t
+fossil_ai_jellyfish_core_attach_backend(
+    fossil_ai_jellyfish_core_t *core,
+    fossil_ai_jellyfish_backend_t *backend
+) {
+    if (!core || !backend) return FOSSIL_AI_JELLYFISH_ERR_INVALID;
+    core->backend = backend;
+    return FOSSIL_AI_JELLYFISH_OK;
+}
+
+fossil_ai_jellyfish_backend_t *
+fossil_ai_jellyfish_core_select_backend(
+    fossil_ai_jellyfish_core_t *core,
+    const char *backend_id
+) {
+    (void)backend_id;
+    return core ? core->backend : NULL;
+}
+
+/* ============================================================
+ * Context & Time
+ * ============================================================ */
+
+fossil_ai_jellyfish_context_t *
+fossil_ai_jellyfish_context_create(const char *context_id) {
+    fossil_ai_jellyfish_context_t *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
-    strncpy(ctx->session_id, session_id, sizeof(ctx->session_id)-1);
-    ctx->history_len = 0;
-    ctx->history = NULL;
-    ctx->timestamp = (int64_t)time(NULL);
+
+    ctx->context_id = context_id ? strdup(context_id) : NULL;
     return ctx;
 }
 
-void fossil_ai_jellyfish_free_context(fossil_ai_jellyfish_context_t *ctx) {
+void
+fossil_ai_jellyfish_context_destroy(fossil_ai_jellyfish_context_t *ctx) {
     if (!ctx) return;
-    if (ctx->history) free(ctx->history);
+
+    for (size_t i = 0; i < ctx->count; ++i) {
+        free(ctx->keys[i]);
+        free(ctx->values[i]);
+    }
+    free(ctx->keys);
+    free(ctx->values);
+    free(ctx->context_id);
     free(ctx);
 }
 
-// ======================================================
-// Training
-// ======================================================
-
-
-// Fisher-Yates shuffle for epochs
-static void shuffle_indices(size_t *indices, size_t n) {
-    if (!indices || n == 0) return;
-    for (size_t i = n - 1; i > 0; i--) {
-        size_t j = rand() % (i + 1);
-        size_t tmp = indices[i];
-        indices[i] = indices[j];
-        indices[j] = tmp;
-    }
+void
+fossil_ai_jellyfish_context_set_timestamp(
+    fossil_ai_jellyfish_context_t *ctx,
+    int64_t unix_time_ns
+) {
+    if (ctx) ctx->timestamp_ns = unix_time_ns;
 }
 
-bool fossil_ai_jellyfish_train(fossil_ai_jellyfish_model_t *model,
-                               const float *inputs,
-                               const float *targets,
-                               size_t count) {
-    if (!model || !inputs || !targets || count == 0) return false;
+void
+fossil_ai_jellyfish_context_set_kv(
+    fossil_ai_jellyfish_context_t *ctx,
+    const char *key,
+    const char *value
+) {
+    if (!ctx || !key || !value) return;
 
-    float *weights = (float *)model->internal_state;
-    size_t in_size = model->input_size;
-    size_t out_size = model->output_size;
-    if (!weights || in_size == 0 || out_size == 0) return false;
+    ctx->keys   = realloc(ctx->keys,   sizeof(char*) * (ctx->count + 1));
+    ctx->values = realloc(ctx->values, sizeof(char*) * (ctx->count + 1));
 
-    float lr = 0.01f;
-    float lambda = 0.001f; // L2 regularization
-
-    float *y_hat = (float *)calloc(out_size, sizeof(float));
-    if (!y_hat) return false;
-
-    size_t *indices = (size_t *)malloc(count * sizeof(size_t));
-    if (!indices) { free(y_hat); return false; }
-    for (size_t n = 0; n < count; n++) indices[n] = n;
-
-    for (size_t epoch = 0; epoch < 20; epoch++) {
-        // Shuffle samples each epoch
-        shuffle_indices(indices, count);
-
-        // Learning rate decay
-        float epoch_lr = lr / (1.0f + 0.05f * epoch);
-
-        for (size_t idx = 0; idx < count; idx++) {
-            size_t n = indices[idx];
-            const float *x = inputs + n * in_size;
-            const float *y = targets + n * out_size;
-
-            if (!x || !y) continue;
-
-            // Forward pass
-            for (size_t j = 0; j < out_size; j++) {
-                y_hat[j] = 0.0f;
-                for (size_t i = 0; i < in_size; i++) {
-                    y_hat[j] += weights[j * in_size + i] * x[i];
-                }
-            }
-
-            // Gradient descent with L2 regularization
-            for (size_t j = 0; j < out_size; j++) {
-                float error = y_hat[j] - y[j];
-                for (size_t i = 0; i < in_size; i++) {
-                    weights[j * in_size + i] -= epoch_lr * (error * x[i] + lambda * weights[j * in_size + i]);
-                }
-            }
-        }
-    }
-
-    free(y_hat);
-    free(indices);
-    return true;
+    ctx->keys[ctx->count]   = strdup(key);
+    ctx->values[ctx->count] = strdup(value);
+    ctx->count++;
 }
 
-// ======================================================
-// Memory — attention weighted retrieval
-// ======================================================
+const char *
+fossil_ai_jellyfish_context_get_kv(
+    const fossil_ai_jellyfish_context_t *ctx,
+    const char *key
+) {
+    if (!ctx || !key) return NULL;
 
-bool fossil_ai_jellyfish_add_memory(fossil_ai_jellyfish_model_t *model,
-                                    const float *input,
-                                    const float *output,
-                                    size_t embed_len) {
-    if (!model || !input || !output || embed_len == 0) return false;
-    // Ensure embed_len does not exceed the embedding/output array size or model's output size
-    size_t safe_len = embed_len;
-    if (safe_len > FOSSIL_AI_JELLYFISH_EMBED_SIZE) safe_len = FOSSIL_AI_JELLYFISH_EMBED_SIZE;
-    if (model->output_size < safe_len) safe_len = model->output_size;
-    if (safe_len == 0) return false;
-    size_t idx = model->memory_len % FOSSIL_AI_JELLYFISH_MAX_MEMORY;
-    fossil_ai_jellyfish_copy(model->memory[idx].embedding, input, safe_len);
-    fossil_ai_jellyfish_copy(model->memory[idx].output, output, safe_len);
-    model->memory[idx].timestamp = (int64_t)time(NULL);
-    if (model->memory_len < FOSSIL_AI_JELLYFISH_MAX_MEMORY) model->memory_len++;
-    return true;
+    for (size_t i = 0; i < ctx->count; ++i) {
+        if (strcmp(ctx->keys[i], key) == 0)
+            return ctx->values[i];
+    }
+    return NULL;
 }
 
-// ======================================================
-// Inference — linear model + attention
-// ======================================================
+/* ============================================================
+ * Model Management
+ * ============================================================ */
 
-bool fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t *model,
-                               fossil_ai_jellyfish_context_t *ctx,
-                               const float *input,
-                               float *output) {
-    if (!model || !input || !output) return false;
-    size_t in_size = model->input_size;
-    size_t out_size = model->output_size;
-    float *weights = (float *)model->internal_state;
+fossil_ai_jellyfish_model_t *
+fossil_ai_jellyfish_model_create(
+    const char *model_id,
+    const char *architecture_id
+) {
+    fossil_ai_jellyfish_model_t *m = calloc(1, sizeof(*m));
+    if (!m) return NULL;
 
-    if (in_size == 0 || out_size == 0 || !weights) return false;
-
-    // 1. Linear model
-    for (size_t j = 0; j < out_size; j++) {
-        output[j] = 0.0f;
-        for (size_t i = 0; i < in_size; i++) {
-            output[j] += weights[j * in_size + i] * input[i];
-        }
-    }
-
-    // 2. Attention memory blending
-    if (model->memory_len > 0) {
-        size_t mem_vec_len = out_size < FOSSIL_AI_JELLYFISH_EMBED_SIZE ? out_size : FOSSIL_AI_JELLYFISH_EMBED_SIZE;
-        float scores[FOSSIL_AI_JELLYFISH_MAX_MEMORY] = {0};
-        for (size_t m = 0; m < model->memory_len; m++) {
-            scores[m] = -fossil_ai_jellyfish_l2_distance(input, model->memory[m].embedding, mem_vec_len);
-        }
-        float attn[FOSSIL_AI_JELLYFISH_MAX_MEMORY] = {0};
-        fossil_ai_jellyfish_softmax(scores, attn, model->memory_len);
-
-        // blend memory
-        for (size_t j = 0; j < out_size; j++) {
-            float blend = 0.0f;
-            if (j < mem_vec_len) {
-                for (size_t m = 0; m < model->memory_len; m++) {
-                    blend += model->memory[m].output[j] * attn[m];
-                }
-                // If blend is NaN or inf, skip blending
-                if (isnan(blend) || isinf(blend)) continue;
-                output[j] = 0.5f * output[j] + 0.5f * blend; // blend linear + memory
-            }
-            // If j >= mem_vec_len, leave output[j] as is (from linear model)
-        }
-    }
-
-    // Only add memory if output is valid (not all zeros, NaN, or inf)
-    bool valid = false;
-    for (size_t j = 0; j < out_size; j++) {
-        if (!isnan(output[j]) && !isinf(output[j]) && output[j] != 0.0f) {
-            valid = true;
-            break;
-        }
-    }
-    if (valid) {
-        fossil_ai_jellyfish_add_memory(model, input, output, out_size);
-    }
-    if (ctx) ctx->timestamp = (int64_t)time(NULL);
-    return valid;
+    m->model_id = strdup(model_id);
+    m->architecture_id = strdup(architecture_id);
+    return m;
 }
 
-// ======================================================
-// Persistence
-// ======================================================
+void
+fossil_ai_jellyfish_model_destroy(fossil_ai_jellyfish_model_t *model) {
+    if (!model) return;
+    free(model->model_id);
+    free(model->architecture_id);
+    free(model->parameters);
+    free(model);
+}
 
-bool fossil_ai_jellyfish_save_model(const fossil_ai_jellyfish_model_t *model, const char *filepath) {
-    if (!model || !filepath) return false;
-    FILE *f = fopen(filepath, "wb");
-    if (!f) return false;
+fossil_ai_jellyfish_status_t
+fossil_ai_jellyfish_model_save(
+    const fossil_ai_jellyfish_model_t *model,
+    const char *path
+) {
+    if (!model || !path) return FOSSIL_AI_JELLYFISH_ERR_INVALID;
 
-    // Header
-    uint32_t magic = FOSSIL_AI_JELLYFISH_MAGIC;
-    uint32_t version = FOSSIL_AI_JELLYFISH_VERSION;
-    fwrite(&magic, sizeof(magic), 1, f);
-    fwrite(&version, sizeof(version), 1, f);
+    FILE *f = fopen(path, "wb");
+    if (!f) return FOSSIL_AI_JELLYFISH_ERR_IO;
 
-    // Core metadata
-    fwrite(&model->input_size, sizeof(model->input_size), 1, f);
-    fwrite(&model->output_size, sizeof(model->output_size), 1, f);
-    fwrite(model->name, sizeof(model->name), 1, f);
-    fwrite(&model->memory_len, sizeof(model->memory_len), 1, f);
-
-    // Memory
-    size_t mem_len = model->memory_len;
-    if (mem_len > FOSSIL_AI_JELLYFISH_MAX_MEMORY) mem_len = FOSSIL_AI_JELLYFISH_MAX_MEMORY;
-    fwrite(model->memory, sizeof(fossil_ai_jellyfish_memory_t), mem_len, f);
-
-    // Internal state (weights)
-    size_t weight_count = model->input_size * model->output_size;
-    fwrite(model->internal_state, sizeof(float), weight_count, f);
-
+    fwrite(&model->parameter_size, sizeof(size_t), 1, f);
+    fwrite(model->parameters, 1, model->parameter_size, f);
     fclose(f);
-    return true;
+
+    return FOSSIL_AI_JELLYFISH_OK;
 }
 
-fossil_ai_jellyfish_model_t *fossil_ai_jellyfish_load_model(const char *filepath) {
-    if (!filepath) return NULL;
-    FILE *f = fopen(filepath, "rb");
+fossil_ai_jellyfish_model_t *
+fossil_ai_jellyfish_model_load(const char *path) {
+    FILE *f = fopen(path, "rb");
     if (!f) return NULL;
 
-    uint32_t magic = 0, version = 0;
-    if (fread(&magic, sizeof(magic), 1, f) != 1) { fclose(f); return NULL; }
-    if (fread(&version, sizeof(version), 1, f) != 1) { fclose(f); return NULL; }
-    if (magic != FOSSIL_AI_JELLYFISH_MAGIC || version != FOSSIL_AI_JELLYFISH_VERSION) {
-        fclose(f);
-        return NULL; // invalid file
-    }
+    fossil_ai_jellyfish_model_t *m = calloc(1, sizeof(*m));
+    fread(&m->parameter_size, sizeof(size_t), 1, f);
 
-    fossil_ai_jellyfish_model_t *model = (fossil_ai_jellyfish_model_t *)calloc(1, sizeof(fossil_ai_jellyfish_model_t));
-    if (!model) { fclose(f); return NULL; }
-
-    if (fread(&model->input_size, sizeof(model->input_size), 1, f) != 1) { free(model); fclose(f); return NULL; }
-    if (fread(&model->output_size, sizeof(model->output_size), 1, f) != 1) { free(model); fclose(f); return NULL; }
-    if (fread(model->name, sizeof(model->name), 1, f) != 1) { free(model); fclose(f); return NULL; }
-    if (fread(&model->memory_len, sizeof(model->memory_len), 1, f) != 1) { free(model); fclose(f); return NULL; }
-
-    // Memory
-    size_t mem_len = model->memory_len;
-    if (mem_len > FOSSIL_AI_JELLYFISH_MAX_MEMORY) mem_len = FOSSIL_AI_JELLYFISH_MAX_MEMORY;
-    if (fread(model->memory, sizeof(fossil_ai_jellyfish_memory_t), mem_len, f) != mem_len) { free(model); fclose(f); return NULL; }
-    model->memory_len = mem_len;
-
-    // Internal state
-    size_t weight_count = model->input_size * model->output_size;
-    model->internal_state = calloc(weight_count, sizeof(float));
-    if (!model->internal_state) { free(model); fclose(f); return NULL; }
-    if (fread(model->internal_state, sizeof(float), weight_count, f) != weight_count) { free(model->internal_state); free(model); fclose(f); return NULL; }
-
+    m->parameters = malloc(m->parameter_size);
+    fread(m->parameters, 1, m->parameter_size, f);
     fclose(f);
-    return model;
+
+    return m;
+}
+
+/* ============================================================
+ * Inference (Stub)
+ * ============================================================ */
+
+fossil_ai_jellyfish_status_t
+fossil_ai_jellyfish_model_run(
+    fossil_ai_jellyfish_model_t *model,
+    fossil_ai_jellyfish_backend_t *backend,
+    fossil_ai_jellyfish_context_t *ctx,
+    const void *input,
+    size_t input_size,
+    void *output,
+    size_t output_size
+) {
+    (void)model;
+    (void)backend;
+    (void)ctx;
+
+    /* cold stub: echo input to output */
+    size_t n = input_size < output_size ? input_size : output_size;
+    memcpy(output, input, n);
+
+    return FOSSIL_AI_JELLYFISH_OK;
+}
+
+/* ============================================================
+ * Training (Stub)
+ * ============================================================ */
+
+fossil_ai_jellyfish_train_t *
+fossil_ai_jellyfish_train_create(
+    fossil_ai_jellyfish_model_t *model,
+    const char *trainer_id
+) {
+    fossil_ai_jellyfish_train_t *t = calloc(1, sizeof(*t));
+    if (!t) return NULL;
+
+    t->model = model;
+    t->trainer_id = strdup(trainer_id);
+    return t;
+}
+
+void
+fossil_ai_jellyfish_train_destroy(fossil_ai_jellyfish_train_t *train) {
+    if (!train) return;
+    free(train->trainer_id);
+    free(train);
+}
+
+fossil_ai_jellyfish_status_t
+fossil_ai_jellyfish_train_step(
+    fossil_ai_jellyfish_train_t *train,
+    const void *input,
+    size_t input_size,
+    const void *expected,
+    size_t expected_size
+) {
+    (void)train;
+    (void)input;
+    (void)input_size;
+    (void)expected;
+    (void)expected_size;
+
+    return FOSSIL_AI_JELLYFISH_OK;
+}
+
+fossil_ai_jellyfish_status_t
+fossil_ai_jellyfish_train_finalize(
+    fossil_ai_jellyfish_train_t *train
+) {
+    (void)train;
+    return FOSSIL_AI_JELLYFISH_OK;
+}
+
+/* ============================================================
+ * Introspection
+ * ============================================================ */
+
+const char *
+fossil_ai_jellyfish_model_id(
+    const fossil_ai_jellyfish_model_t *model
+) {
+    return model ? model->model_id : NULL;
+}
+
+const char *
+fossil_ai_jellyfish_model_architecture(
+    const fossil_ai_jellyfish_model_t *model
+) {
+    return model ? model->architecture_id : NULL;
+}
+
+uint64_t
+fossil_ai_jellyfish_model_parameter_count(
+    const fossil_ai_jellyfish_model_t *model
+) {
+    return model ? (uint64_t)model->parameter_size : 0;
 }

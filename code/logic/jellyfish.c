@@ -26,8 +26,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <float.h>
 #include <stdint.h>
 #include <stdbool.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 /* ======================================================
  * Lookup Tables
@@ -126,27 +133,114 @@ fossil_ai_jellyfish_memory_t* fossil_ai_jellyfish_get_memory(const fossil_ai_jel
 }
 
 /* ======================================================
- * Training / Inference
+ * Memory / Embedding Utilities
  * ====================================================== */
 
-bool fossil_ai_jellyfish_train_model(fossil_ai_jellyfish_model_t* model) {
-    if (!model) return false;
-    // Simple stub: mark trained if it has memory
-    if (model->memory_count > 0) model->trained = true;
-    return model->trained;
+/* Normalize embedding in-place and return magnitude */
+static float fossil_ai_jellyfish_normalize_embedding(float* vec) {
+    float mag = 0.0f;
+    for (size_t i = 0; i < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++i) {
+        mag += vec[i] * vec[i];
+    }
+    if (mag > 0.0f) {
+        mag = sqrtf(mag);
+        for (size_t i = 0; i < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++i) {
+            vec[i] /= mag;
+        }
+    }
+    return mag;
 }
 
+/* ======================================================
+ * Training / Inference (Weighted k-NN)
+ * ====================================================== */
+
+/* Precompute normalized embeddings for all memory vectors */
+static void fossil_ai_jellyfish_precompute_norms(fossil_ai_jellyfish_model_t* model) {
+    for (size_t i = 0; i < model->memory_count; ++i) {
+        float mag = 0.0f;
+        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
+            mag += model->memory[i].embedding[j] * model->memory[i].embedding[j];
+        mag = sqrtf(mag);
+        if (mag > 0.0f) {
+            for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
+                model->memory[i].embedding[j] /= mag;
+        }
+    }
+}
+
+/* Train the model: normalize embeddings */
+bool fossil_ai_jellyfish_train_model(fossil_ai_jellyfish_model_t* model) {
+    if (!model) return false;
+    if (model->memory_count == 0) {
+        model->trained = false;
+        return false;
+    }
+
+    fossil_ai_jellyfish_precompute_norms(model);
+    model->trained = true;
+    return true;
+}
+
+/* Predict output embedding using weighted k-nearest neighbors */
 bool fossil_ai_jellyfish_predict(const fossil_ai_jellyfish_model_t* model, const float* input_embedding, float* output_embedding) {
     if (!model || !input_embedding || !output_embedding) return false;
     if (!model->trained || model->memory_count == 0) return false;
 
-    // Stub: copy the first memory output as prediction
-    memcpy(output_embedding, model->memory[0].output, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
+    // Normalize input embedding
+    float norm_input[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
+    memcpy(norm_input, input_embedding, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
+    fossil_ai_jellyfish_normalize_embedding(norm_input);
+
+    // Default k = min(3, memory_count)
+    size_t k = model->memory_count < 3 ? model->memory_count : 3;
+
+    // Arrays to track top k similarities
+    size_t best_indices[3] = {0};
+    float best_scores[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
+    // Compute cosine similarity
+    for (size_t i = 0; i < model->memory_count; ++i) {
+        float dot = 0.0f;
+        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
+            dot += norm_input[j] * model->memory[i].embedding[j];
+
+        // Check if this is in top k
+        for (size_t t = 0; t < k; ++t) {
+            if (dot > best_scores[t]) {
+                // Shift lower scores down
+                for (size_t s = k - 1; s > t; --s) {
+                    best_scores[s] = best_scores[s - 1];
+                    best_indices[s] = best_indices[s - 1];
+                }
+                best_scores[t] = dot;
+                best_indices[t] = i;
+                break;
+            }
+        }
+    }
+
+    // Weighted sum of top k outputs
+    memset(output_embedding, 0, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
+    float total_weight = 0.0f;
+    for (size_t t = 0; t < k; ++t) {
+        float weight = best_scores[t] > 0.0f ? best_scores[t] : 0.0f;
+        total_weight += weight;
+        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
+            output_embedding[j] += model->memory[best_indices[t]].output[j] * weight;
+    }
+
+    // Normalize output by total weight
+    if (total_weight > 0.0f) {
+        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
+            output_embedding[j] /= total_weight;
+    }
+
     return true;
 }
 
 /* ======================================================
- * System / Hardware Awareness
+ * Endianness
  * ====================================================== */
 
 bool fossil_ai_jellyfish_is_little_endian(void) {
@@ -154,16 +248,45 @@ bool fossil_ai_jellyfish_is_little_endian(void) {
     return *((uint8_t*)&x) == 1;
 }
 
+/* ======================================================
+ * System / Hardware Awareness
+ * ====================================================== */
+
 fossil_ai_jellyfish_system_info_t fossil_ai_jellyfish_get_system_info(void) {
     fossil_ai_jellyfish_system_info_t info = {0};
+
+    /* CPU cores */
 #if defined(_WIN32)
-    info.cpu_cores = (size_t)__builtin_popcount(~0); // placeholder
-    info.ram_bytes = 0; // placeholder, could use GlobalMemoryStatusEx
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    info.cpu_cores = (size_t)sysinfo.dwNumberOfProcessors;
 #else
-    info.cpu_cores = (size_t)sysconf(_SC_NPROCESSORS_ONLN);
-    info.ram_bytes = (size_t)sysconf(_SC_PHYS_PAGES) * (size_t)sysconf(_SC_PAGESIZE);
+    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
+    info.cpu_cores = (nprocs > 0) ? (size_t)nprocs : 1;
 #endif
+
+    /* RAM size */
+#if defined(_WIN32)
+    MEMORYSTATUSEX memStatus;
+    memStatus.dwLength = sizeof(memStatus);
+    if (GlobalMemoryStatusEx(&memStatus)) {
+        info.ram_bytes = (size_t)memStatus.ullTotalPhys;
+    } else {
+        info.ram_bytes = 0;
+    }
+#else
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (pages > 0 && page_size > 0) {
+        info.ram_bytes = (size_t)pages * (size_t)page_size;
+    } else {
+        info.ram_bytes = 0;
+    }
+#endif
+
+    /* Endianness */
     info.is_little_endian = fossil_ai_jellyfish_is_little_endian();
+
     return info;
 }
 
@@ -186,9 +309,31 @@ uint32_t fossil_ai_jellyfish_hash_string(const char* s) {
 
 void fossil_ai_jellyfish_detect_capabilities(fossil_ai_jellyfish_model_t* model) {
     if (!model) return;
-    // Stub: print capabilities
-    printf("Model: %s\n", model->name);
-    printf("Memory count: %zu\n", model->memory_count);
-    printf("Trained: %s\n", model->trained ? "yes" : "no");
-    printf("Version: %llu\n", (unsigned long long)model->version);
+
+    printf("=== Jellyfish AI Model Capabilities ===\n");
+
+    // Model metadata
+    printf("Model Name       : %s\n", model->name);
+    printf("Model Version    : %llu\n", (unsigned long long)model->version);
+    printf("Trained          : %s\n", model->trained ? "yes" : "no");
+
+    // Memory statistics
+    printf("Memory Count     : %zu / %d\n", model->memory_count, FOSSIL_AI_JELLYFISH_MAX_MEMORY);
+    if (model->memory_count > 0) {
+        size_t total_embeddings = model->memory_count * FOSSIL_AI_JELLYFISH_EMBED_SIZE;
+        printf("Total Embeddings : %zu floats\n", total_embeddings);
+    }
+
+    // System / hardware info
+    fossil_ai_jellyfish_system_info_t sysinfo = fossil_ai_jellyfish_get_system_info();
+    printf("CPU Cores        : %zu\n", sysinfo.cpu_cores);
+    printf("RAM              : %zu bytes\n", sysinfo.ram_bytes);
+    printf("Endianness       : %s\n", sysinfo.is_little_endian ? "Little" : "Big");
+
+    // Capabilities
+    printf("Supports k-NN Prediction   : yes\n");
+    printf("Supports Weighted Outputs  : yes\n");
+    printf("Persistent Storage Ready   : yes\n");
+
+    printf("=== End of Capabilities ===\n");
 }

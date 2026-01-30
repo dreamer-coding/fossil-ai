@@ -689,3 +689,78 @@ int fossil_ai_jellyfish_summary(fossil_ai_jellyfish_core_t* core,
     summary->media_type="text/plain";
     return 0;
 }
+
+/* ------------------------------------------------------------
+   Prune: remove low-impact weights (stub)
+------------------------------------------------------------ */
+int fossil_ai_jellyfish_prune(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    float sparsity
+) {
+    if (!core || !model || sparsity < 0.0f || sparsity > 1.0f) return -1;
+    printf("[INFO] Pruning model '%s' to %.2f%% sparsity\n", model->id, sparsity*100.0f);
+    // TODO: implement actual weight pruning
+    return 0;
+}
+
+/* ------------------------------------------------------------
+   Learn: add new knowledge from a context
+------------------------------------------------------------ */
+int fossil_ai_jellyfish_learn(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_context_t* context
+) {
+    if (!core || !model || !context) return -1;
+    printf("[INFO] Learning from context '%s' into model '%s'\n", context->id, model->id);
+    // TODO: implement incremental learning from context->blobs
+    return 0;
+}
+
+/* ------------------------------------------------------------
+   Relearn: refresh knowledge (incremental update)
+------------------------------------------------------------ */
+int fossil_ai_jellyfish_relearn(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_context_t* context
+) {
+    if(!core || !model || !context) return -1;
+    printf("[INFO] Relearning context '%s' into model '%s'\n", context->id, model->id);
+    // TODO: implement selective overwriting / incremental update
+    return 0;
+}
+
+/* ------------------------------------------------------------
+   Unlearn: remove specific knowledge from context
+------------------------------------------------------------ */
+int fossil_ai_jellyfish_unlearn(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_context_t* context
+) {
+    if (!core || !model || !context) return -1;
+    printf("[INFO] Unlearning context '%s' from model '%s'\n", context->id, model->id);
+    // TODO: implement knowledge removal
+    return 0;
+}
+
+/* ------------------------------------------------------------
+   Reason: perform logical or causal reasoning
+------------------------------------------------------------ */
+int fossil_ai_jellyfish_reason(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_context_t* context,
+    const char* question,
+    fossil_ai_jellyfish_blob_t* explanation
+) {
+    if (!core || !model || !context || !question || !explanation) return -1;
+    printf("[INFO] Reasoning on question '%s' with model '%s'\n", question, model->id);
+    // TODO: generate explanation based on context
+    explanation->data = fossil_ai_jellyfish_strdup("Reasoning result placeholder");
+    explanation->size = strlen((char*)explanation->data);
+    explanation->media_type = "text/plain";
+    return 0;
+}

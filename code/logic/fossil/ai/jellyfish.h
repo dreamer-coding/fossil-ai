@@ -33,116 +33,110 @@
 extern "C" {
 #endif
 
-/* ======================================================
- * Constants
- * ====================================================== */
+#include <stddef.h>
+#include <stdint.h>
 
-#define FOSSIL_AI_JELLYFISH_MAX_MEMORY 1024
-#define FOSSIL_AI_JELLYFISH_EMBED_SIZE 64
-#define FOSSIL_AI_JELLYFISH_MODEL_NAME_LEN 128
+// ----------------------------
+// Basic Types
+// ----------------------------
+typedef struct fossil_ai_jellyfish_model fossil_ai_jellyfish_model_t;
+typedef struct fossil_ai_jellyfish_context fossil_ai_jellyfish_context_t;
+typedef struct fossil_ai_jellyfish_data fossil_ai_jellyfish_data_t;
 
-/* ======================================================
- * Types
- * ====================================================== */
+// String ID type
+typedef const char* fossil_ai_jellyfish_id_t;
 
-/* Memory vector for embeddings and attention outputs */
-typedef struct fossil_ai_jellyfish_memory_t {
-    float embedding[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
-    float output[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
-    int64_t timestamp;
-    char id[64];
-    char modality[16];   // optional: "text", "audio", "image"
-    bool trusted;        // true = safe, false = quarantined
-} fossil_ai_jellyfish_memory_t;
+// ----------------------------
+// Initialization / Core
+// ----------------------------
 
-/* Persistent model structure */
-typedef struct fossil_ai_jellyfish_model_t {
-    char name[FOSSIL_AI_JELLYFISH_MODEL_NAME_LEN];
-    uint64_t version;
-    size_t memory_count;
-    fossil_ai_jellyfish_memory_t memory[FOSSIL_AI_JELLYFISH_MAX_MEMORY];
-    bool trained;                                    // Has model been trained
-} fossil_ai_jellyfish_model_t;
+/**
+ * Initialize the Jellyfish AI library.
+ * Must be called before any other function.
+ */
+int fossil_ai_jellyfish_init();
 
-/* Hardware and system info */
-typedef struct fossil_ai_jellyfish_system_info_t {
-    size_t ram_bytes;
-    size_t cpu_cores;
-    bool is_little_endian;
-} fossil_ai_jellyfish_system_info_t;
+/**
+ * Shutdown the Jellyfish AI library and free resources.
+ */
+void fossil_ai_jellyfish_shutdown();
 
-/* ======================================================
- * Initialization / Cleanup
- * ====================================================== */
+/**
+ * Set up the cold core to enforce model integrity and protect against contamination.
+ */
+int fossil_ai_jellyfish_setup_cold_core(fossil_ai_jellyfish_model_t* model);
 
-/* Create a new AI model instance */
-fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_create_model(const char* name);
+// ----------------------------
+// Context Management
+// ----------------------------
+fossil_ai_jellyfish_context_t* fossil_ai_jellyfish_context_create();
+void fossil_ai_jellyfish_context_destroy(fossil_ai_jellyfish_context_t* ctx);
 
-/* Free a model instance */
-void fossil_ai_jellyfish_free_model(fossil_ai_jellyfish_model_t* model);
+/**
+ * Add arbitrary context data to assist inference and training.
+ */
+int fossil_ai_jellyfish_context_add(fossil_ai_jellyfish_context_t* ctx, fossil_ai_jellyfish_id_t key, const void* value, size_t size);
 
-/* ======================================================
- * Model Persistence
- * ====================================================== */
+// ----------------------------
+// Model Management
+// ----------------------------
+fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_model_load(fossil_ai_jellyfish_id_t model_path);
+int fossil_ai_jellyfish_model_save(fossil_ai_jellyfish_model_t* model, fossil_ai_jellyfish_id_t model_path);
+void fossil_ai_jellyfish_model_destroy(fossil_ai_jellyfish_model_t* model);
 
-/* Save model to file */
-bool fossil_ai_jellyfish_save_model(const fossil_ai_jellyfish_model_t* model, const char* path);
+/**
+ * Create a new model with optional multimodal capabilities.
+ */
+fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_model_create(fossil_ai_jellyfish_id_t model_name, int multimodal_enabled);
 
-/* Load model from file */
-fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_load_model(const char* path);
+// ----------------------------
+// Inference
+// ----------------------------
+/**
+ * Run inference on a model given a context and input data.
+ */
+int fossil_ai_jellyfish_infer(fossil_ai_jellyfish_model_t* model, fossil_ai_jellyfish_context_t* ctx, fossil_ai_jellyfish_data_t* input, fossil_ai_jellyfish_data_t* output);
 
-/* ======================================================
- * Memory Management
- * ====================================================== */
+/**
+ * Auto-detect input type and route appropriately for multimodal inference.
+ */
+int fossil_ai_jellyfish_auto_infer(fossil_ai_jellyfish_model_t* model, fossil_ai_jellyfish_context_t* ctx, fossil_ai_jellyfish_data_t* input, fossil_ai_jellyfish_data_t* output);
 
-/* Add memory vector to model */
-bool fossil_ai_jellyfish_add_memory(
-    fossil_ai_jellyfish_model_t* model,
-    const float* embedding,
-    const float* output,
-    const char* id,
-    int64_t timestamp,
-    const char* modality
-)
+// ----------------------------
+// Training / Retraining / Untraining
+// ----------------------------
+int fossil_ai_jellyfish_train(fossil_ai_jellyfish_model_t* model, fossil_ai_jellyfish_context_t* ctx, fossil_ai_jellyfish_data_t* dataset);
+int fossil_ai_jellyfish_retrain(fossil_ai_jellyfish_model_t* model, fossil_ai_jellyfish_context_t* ctx, fossil_ai_jellyfish_data_t* dataset);
+int fossil_ai_jellyfish_untrain(fossil_ai_jellyfish_model_t* model, fossil_ai_jellyfish_context_t* ctx, fossil_ai_jellyfish_data_t* dataset);
 
-/* Retrieve memory by string ID */
-fossil_ai_jellyfish_memory_t* fossil_ai_jellyfish_get_memory(const fossil_ai_jellyfish_model_t* model, const char* id);
+// ----------------------------
+// Audit / Security
+// ----------------------------
+/**
+ * Generate a cryptographic hash of a model to verify integrity.
+ */
+int fossil_ai_jellyfish_model_hash(fossil_ai_jellyfish_model_t* model, uint8_t* out_hash, size_t* hash_len);
 
-/* ======================================================
- * Training / Inference
- * ====================================================== */
+/**
+ * Audit a model for potential contamination or corruption.
+ */
+int fossil_ai_jellyfish_model_audit(fossil_ai_jellyfish_model_t* model);
 
-/* Train the model with current memory (incremental) */
-bool fossil_ai_jellyfish_train_model(fossil_ai_jellyfish_model_t* model);
+// ----------------------------
+// Data Management
+// ----------------------------
+fossil_ai_jellyfish_data_t* fossil_ai_jellyfish_data_create(size_t size);
+void fossil_ai_jellyfish_data_destroy(fossil_ai_jellyfish_data_t* data);
+int fossil_ai_jellyfish_data_set(fossil_ai_jellyfish_data_t* data, const void* buffer, size_t size);
+int fossil_ai_jellyfish_data_get(fossil_ai_jellyfish_data_t* data, void* buffer, size_t size);
 
-/* Predict output embedding from input embedding */
-bool fossil_ai_jellyfish_predict(const fossil_ai_jellyfish_model_t* model, const float* input_embedding, float* output_embedding);
-
-/* ======================================================
- * System / Hardware Awareness
- * ====================================================== */
-
-/* Detect system endianness */
-bool fossil_ai_jellyfish_is_little_endian(void);
-
-/* Retrieve system info */
-fossil_ai_jellyfish_system_info_t fossil_ai_jellyfish_get_system_info(void);
-
-/* ======================================================
- * Utility / Hashing
- * ====================================================== */
-
-/* Simple FNV-1a 32-bit hash for strings */
-uint32_t fossil_ai_jellyfish_hash_string(const char* s);
-
-/* ======================================================
- * Auto-Detection
- * ====================================================== */
-
-/* Detect and report AI model capabilities */
-void fossil_ai_jellyfish_detect_capabilities(fossil_ai_jellyfish_model_t* model);
-
-void fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_model_t* model);
+// ----------------------------
+// Utility
+// ----------------------------
+/**
+ * Auto-detect type of input data (text, image, audio, etc.).
+ */
+fossil_ai_jellyfish_id_t fossil_ai_jellyfish_data_autodetect(fossil_ai_jellyfish_data_t* data);
 
 #ifdef __cplusplus
 }
@@ -156,143 +150,129 @@ namespace fossil {
 
         class Jellyfish {
         public:
-            /* ======================================================
-             * Construction / Destruction
-             * ====================================================== */
-        
-            explicit Jellyfish(const std::string& name)
-                : model_(fossil_ai_jellyfish_create_model(name.c_str())) {}
+            // ----------------------------
+            // Initialization / Core
+            // ----------------------------
+            Jellyfish() {
+                fossil_ai_jellyfish_init();
+            }
         
             ~Jellyfish() {
-                if (model_) {
-                    fossil_ai_jellyfish_free_model(model_);
-                    model_ = nullptr;
-                }
+                fossil_ai_jellyfish_shutdown();
             }
         
-            // Non-copyable (explicit ownership of C model)
-            Jellyfish(const Jellyfish&) = delete;
-            Jellyfish& operator=(const Jellyfish&) = delete;
-        
-            // Movable
-            Jellyfish(Jellyfish&& other) noexcept : model_(other.model_) {
-                other.model_ = nullptr;
+            int setup_cold_core(fossil_ai_jellyfish_model_t* model) {
+                return fossil_ai_jellyfish_setup_cold_core(model);
             }
         
-            Jellyfish& operator=(Jellyfish&& other) noexcept {
-                if (this != &other) {
-                    fossil_ai_jellyfish_free_model(model_);
-                    model_ = other.model_;
-                    other.model_ = nullptr;
-                }
-                return *this;
+            // ----------------------------
+            // Context Management
+            // ----------------------------
+            fossil_ai_jellyfish_context_t* context_create() {
+                return fossil_ai_jellyfish_context_create();
+            }
+
+            void context_destroy(fossil_ai_jellyfish_context_t* ctx) {
+                fossil_ai_jellyfish_context_destroy(ctx);
             }
         
-            /* ======================================================
-             * Model Persistence
-             * ====================================================== */
-        
-            bool save_model(const std::string& path) const {
-                return model_ && fossil_ai_jellyfish_save_model(model_, path.c_str());
+            int context_add(fossil_ai_jellyfish_context_t* ctx, const std::string& key, const void* value, size_t size) {
+                return fossil_ai_jellyfish_context_add(ctx, key.c_str(), value, size);
+            }
+
+            // ----------------------------
+            // Model Management
+            // ----------------------------
+            fossil_ai_jellyfish_model_t* model_load(const std::string& path) {
+                return fossil_ai_jellyfish_model_load(path.c_str());
             }
         
-            static Jellyfish load_model(const std::string& path) {
-                fossil_ai_jellyfish_model_t* m =
-                    fossil_ai_jellyfish_load_model(path.c_str());
-        
-                Jellyfish jf("");
-                jf.model_ = m;
-                return jf;
+            int model_save(fossil_ai_jellyfish_model_t* model, const std::string& path) {
+                return fossil_ai_jellyfish_model_save(model, path.c_str());
+            }
+
+            void model_destroy(fossil_ai_jellyfish_model_t* model) {
+                fossil_ai_jellyfish_model_destroy(model);
+            }
+
+            fossil_ai_jellyfish_model_t* model_create(const std::string& name, bool multimodal_enabled) {
+                return fossil_ai_jellyfish_model_create(name.c_str(), multimodal_enabled ? 1 : 0);
+            }
+
+            // ----------------------------
+            // Inference
+            // ----------------------------
+            int infer(fossil_ai_jellyfish_model_t* model,
+                      fossil_ai_jellyfish_context_t* ctx,
+                      fossil_ai_jellyfish_data_t* input,
+                      fossil_ai_jellyfish_data_t* output) {
+                return fossil_ai_jellyfish_infer(model, ctx, input, output);
+            }
+
+            int auto_infer(fossil_ai_jellyfish_model_t* model,
+                           fossil_ai_jellyfish_context_t* ctx,
+                           fossil_ai_jellyfish_data_t* input,
+                           fossil_ai_jellyfish_data_t* output) {
+                return fossil_ai_jellyfish_auto_infer(model, ctx, input, output);
+            }
+
+            // ----------------------------
+            // Training / Retraining / Untraining
+            // ----------------------------
+            int train(fossil_ai_jellyfish_model_t* model,
+                      fossil_ai_jellyfish_context_t* ctx,
+                      fossil_ai_jellyfish_data_t* dataset) {
+                return fossil_ai_jellyfish_train(model, ctx, dataset);
+            }
+
+            int retrain(fossil_ai_jellyfish_model_t* model,
+                        fossil_ai_jellyfish_context_t* ctx,
+                        fossil_ai_jellyfish_data_t* dataset) {
+                return fossil_ai_jellyfish_retrain(model, ctx, dataset);
+            }
+
+            int untrain(fossil_ai_jellyfish_model_t* model,
+                        fossil_ai_jellyfish_context_t* ctx,
+                        fossil_ai_jellyfish_data_t* dataset) {
+                return fossil_ai_jellyfish_untrain(model, ctx, dataset);
+            }
+
+            // ----------------------------
+            // Audit / Security
+            // ----------------------------
+            int model_hash(fossil_ai_jellyfish_model_t* model, std::vector<uint8_t>& out_hash) {
+                size_t hash_len = 32; // default max length
+                out_hash.resize(hash_len);
+                return fossil_ai_jellyfish_model_hash(model, out_hash.data(), &hash_len);
             }
         
-            /* ======================================================
-             * Memory Management
-             * ====================================================== */
-        
-            bool add_memory(const float* embedding,
-                            const float* output,
-                            const std::string& id,
-                            int64_t timestamp,
-                            const std::string& modality) {
-                return model_ &&
-                       fossil_ai_jellyfish_add_memory(
-                           model_, embedding, output, id.c_str(), timestamp, modality);
+            int model_audit(fossil_ai_jellyfish_model_t* model) {
+                return fossil_ai_jellyfish_model_audit(model);
+            }
+
+            // ----------------------------
+            // Data Management
+            // ----------------------------
+            fossil_ai_jellyfish_data_t* data_create(size_t size) {
+                return fossil_ai_jellyfish_data_create(size);
             }
         
-            fossil_ai_jellyfish_memory_t* get_memory(const std::string& id) const {
-                return model_
-                    ? fossil_ai_jellyfish_get_memory(model_, id.c_str())
-                    : nullptr;
+            void data_destroy(fossil_ai_jellyfish_data_t* data) {
+                fossil_ai_jellyfish_data_destroy(data);
             }
-        
-            size_t memory_count() const {
-                return model_ ? model_->memory_count : 0;
+
+            int data_set(fossil_ai_jellyfish_data_t* data, const void* buffer, size_t size) {
+                return fossil_ai_jellyfish_data_set(data, buffer, size);
             }
-        
-            /* ======================================================
-             * Training / Inference
-             * ====================================================== */
-        
-            bool train_model() {
-                return model_ && fossil_ai_jellyfish_train_model(model_);
+
+            int data_get(fossil_ai_jellyfish_data_t* data, void* buffer, size_t size) {
+                return fossil_ai_jellyfish_data_get(data, buffer, size);
             }
-        
-            bool predict(const float* input_embedding,
-                         float* output_embedding) const {
-                return model_ &&
-                       fossil_ai_jellyfish_predict(
-                           model_, input_embedding, output_embedding);
+
+            std::string data_autodetect(fossil_ai_jellyfish_data_t* data) {
+                fossil_ai_jellyfish_id_t id = fossil_ai_jellyfish_data_autodetect(data);
+                return std::string(id ? id : "");
             }
-        
-            bool is_trained() const {
-                return model_ && model_->trained;
-            }
-        
-            /* ======================================================
-             * System / Hardware Awareness
-             * ====================================================== */
-        
-            static bool is_little_endian() {
-                return fossil_ai_jellyfish_is_little_endian();
-            }
-        
-            static fossil_ai_jellyfish_system_info_t get_system_info() {
-                return fossil_ai_jellyfish_get_system_info();
-            }
-        
-            /* ======================================================
-             * Utility / Hashing
-             * ====================================================== */
-        
-            static uint32_t hash_string(const std::string& s) {
-                return fossil_ai_jellyfish_hash_string(s.c_str());
-            }
-        
-            /* ======================================================
-             * Introspection / Audit
-             * ====================================================== */
-        
-            void detect_capabilities() const {
-                if (model_) {
-                    fossil_ai_jellyfish_detect_capabilities(model_);
-                }
-            }
-        
-            void audit() const {
-                if (model_) {
-                    fossil_ai_jellyfish_audit(model_);
-                }
-            }
-        
-            /* ======================================================
-             * Low-level Access (escape hatch)
-             * ====================================================== */
-        
-            fossil_ai_jellyfish_model_t* raw() { return model_; }
-            const fossil_ai_jellyfish_model_t* raw() const { return model_; }
-        
-        private:
-            fossil_ai_jellyfish_model_t* model_ = nullptr;
         };
 
     } // namespace ai

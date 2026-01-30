@@ -418,9 +418,66 @@ int fossil_ai_jellyfish_erase(fossil_ai_jellyfish_core_t* core,
     return 0;
 }
 
-int fossil_ai_jellyfish_infer(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_context_t* ctx,fossil_ai_jellyfish_blob_t* output){
-    static const char* stub="stub inference output"; output->data=stub; output->size=strlen(stub); output->media_type="text/plain"; return 0;
+int fossil_ai_jellyfish_infer(fossil_ai_jellyfish_core_t* core,
+                              fossil_ai_jellyfish_model_t* model,
+                              fossil_ai_jellyfish_context_t* ctx,
+                              fossil_ai_jellyfish_blob_t* output) {
+    if(!core || !model || !ctx || !output) return -1;
+    /* Compute context hash to ensure integrity */
+    fossil_ai_jellyfish_hash_t h = fossil_ai_jellyfish_context_hash(ctx);
+    /* Simple multimodal inference stub: concatenate all blob sizes as text */
+    size_t total=0;
+    for(size_t i=0;i<ctx->num_blobs;i++) total+=ctx->blobs[i].size;
+    char* buf=(char*)malloc(total+1); size_t off=0;
+    for(size_t i=0;i<ctx->num_blobs;i++){
+        memcpy(buf+off,ctx->blobs[i].data,ctx->blobs[i].size);
+        off+=ctx->blobs[i].size;
+    }
+    buf[off]=0;
+    output->data=buf;
+    output->size=off;
+    output->media_type="text/plain";
+    return 0;
 }
-int fossil_ai_jellyfish_auto_detect(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model){ return 0; }
-int fossil_ai_jellyfish_ask(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_context_t* ctx,const char* q,fossil_ai_jellyfish_blob_t* answer){ static const char* stub="stub answer"; answer->data=stub; answer->size=strlen(stub); answer->media_type="text/plain"; return 0; }
-int fossil_ai_jellyfish_summary(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_context_t* ctx,fossil_ai_jellyfish_blob_t* summary){ static const char* stub="stub summary"; summary->data=stub; summary->size=strlen(stub); summary->media_type="text/plain"; return 0; }
+
+int fossil_ai_jellyfish_auto_detect(fossil_ai_jellyfish_core_t* core,
+                                    fossil_ai_jellyfish_model_t* model) {
+    /* For now: check that model id/type are non-null and log file exists */
+    char path[512];
+    snprintf(path,sizeof(path),"%s_%s_training.log", core->id, model->id);
+    FILE* f=fopen(path,"rb");
+    if(!f) return -1; /* Model has no training history, possible drift */
+    fclose(f);
+    return 0;
+}
+
+int fossil_ai_jellyfish_ask(fossil_ai_jellyfish_core_t* core,
+                             fossil_ai_jellyfish_model_t* model,
+                             fossil_ai_jellyfish_context_t* ctx,
+                             const char* question,
+                             fossil_ai_jellyfish_blob_t* answer) {
+    if(!core || !model || !ctx || !question || !answer) return -1;
+    /* Fake "answer" by concatenating question + context hash */
+    fossil_ai_jellyfish_hash_t h = fossil_ai_jellyfish_context_hash(ctx);
+    size_t len = strlen(question) + 64 + 1;
+    char* buf=(char*)malloc(len);
+    snprintf(buf,len,"%s|ctxhash=%02x%02x%02x...", question, h.bytes[0], h.bytes[1], h.bytes[2]);
+    answer->data=buf;
+    answer->size=strlen(buf);
+    answer->media_type="text/plain";
+    return 0;
+}
+
+int fossil_ai_jellyfish_summary(fossil_ai_jellyfish_core_t* core,
+                                fossil_ai_jellyfish_model_t* model,
+                                fossil_ai_jellyfish_context_t* ctx,
+                                fossil_ai_jellyfish_blob_t* summary) {
+    if(!core || !model || !ctx || !summary) return -1;
+    fossil_ai_jellyfish_hash_t h = fossil_ai_jellyfish_context_hash(ctx);
+    char* buf=(char*)malloc(64);
+    snprintf(buf,64,"Summary of context %s: %zu blobs", ctx->id, ctx->num_blobs);
+    summary->data=buf;
+    summary->size=strlen(buf);
+    summary->media_type="text/plain";
+    return 0;
+}

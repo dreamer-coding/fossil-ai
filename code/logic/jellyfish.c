@@ -36,6 +36,36 @@
 #include <unistd.h>
 #endif
 
+static void fossil_ai_jellyfish_precompute_norms(fossil_ai_jellyfish_model_t* model) {
+    for (size_t i = 0; i < model->memory_count; ++i) {
+        if (!model->memory[i].trusted) continue; // skip untrusted
+        float mag = 0.0f;
+        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
+            mag += model->memory[i].embedding[j] * model->memory[i].embedding[j];
+        mag = sqrtf(mag);
+        if (mag > 0.0f) {
+            for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
+                model->memory[i].embedding[j] /= mag;
+        }
+    }
+}
+
+/* ======================================================
+ * AI firewall protection
+ * ====================================================== */
+bool fossil_ai_jellyfish_firewall_check(const float* embedding, const char* modality) {
+    // Example: reject embeddings with abnormal norms (emotional / extreme)
+    float mag = 0.0f;
+    for (size_t i = 0; i < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++i)
+        mag += embedding[i] * embedding[i];
+    mag = sqrtf(mag);
+
+    if (mag > 20.0f) return false; // too “emotional” / abnormal
+
+    // You can extend here for keyword or modality-based rejection
+    return true; // safe
+}
+
 /* ======================================================
  * Lookup Tables
  * ====================================================== */
@@ -110,15 +140,31 @@ fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_load_model(const char* path) {
  * Memory Management
  * ====================================================== */
 
-bool fossil_ai_jellyfish_add_memory(fossil_ai_jellyfish_model_t* model, const float* embedding, const float* output, const char* id, int64_t timestamp) {
+bool fossil_ai_jellyfish_add_memory(
+    fossil_ai_jellyfish_model_t* model,
+    const float* embedding,
+    const float* output,
+    const char* id,
+    int64_t timestamp,
+    const char* modality
+) {
     if (!model || !embedding || !output || !id) return false;
     if (model->memory_count >= FOSSIL_AI_JELLYFISH_MAX_MEMORY) return false;
+
+    bool trusted = fossil_ai_jellyfish_firewall_check(embedding, modality);
+    if (!trusted) {
+        printf("[FIREWALL] Embedding '%s' rejected as untrusted.\n", id);
+        return false; // do not insert
+    }
 
     fossil_ai_jellyfish_memory_t* mem = &model->memory[model->memory_count++];
     memcpy(mem->embedding, embedding, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
     memcpy(mem->output, output, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
     mem->timestamp = timestamp;
     strncpy(mem->id, id, sizeof(mem->id) - 1);
+    strncpy(mem->modality, modality, sizeof(mem->modality) - 1);
+    mem->trusted = true;
+
     return true;
 }
 
@@ -354,38 +400,15 @@ static float fossil_ai_jellyfish_embedding_magnitude(const float* embedding) {
 void fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_model_t* model) {
     if (!model) return;
 
-    printf("=== Jellyfish AI Model Audit ===\n");
-
-    // Model metadata
-    printf("Model Name       : %s\n", model->name);
-    printf("Model Version    : %llu\n", (unsigned long long)model->version);
-    printf("Trained          : %s\n", model->trained ? "yes" : "no");
-    printf("Memory Count     : %zu / %d\n", model->memory_count, FOSSIL_AI_JELLYFISH_MAX_MEMORY);
-
-    // Memory overview
-    printf("---- Memory Vectors ----\n");
+    printf("=== Jellyfish AI Audit ===\n");
     for (size_t i = 0; i < model->memory_count; ++i) {
         const fossil_ai_jellyfish_memory_t* mem = &model->memory[i];
-        float embed_mag = fossil_ai_jellyfish_embedding_magnitude(mem->embedding);
-        printf("[%zu] ID: %s | Timestamp: %lld | Embedding Norm: %.4f\n",
-               i, mem->id, (long long)mem->timestamp, embed_mag);
+        float mag = 0.0f;
+        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
+            mag += mem->embedding[j] * mem->embedding[j];
+        mag = sqrtf(mag);
+        printf("[%zu] ID: %s | Trusted: %s | Modality: %s | Norm: %.4f\n",
+               i, mem->id, mem->trusted ? "yes" : "no", mem->modality, mag);
     }
-
-    // Training audit
-    printf("---- Training Audit ----\n");
-    if (model->trained) {
-        printf("Model is trained.\n");
-        printf("Memory vectors ready for k-NN prediction: %zu\n", model->memory_count);
-    } else {
-        printf("Model not trained yet.\n");
-    }
-
-    // System / hardware info
-    printf("---- Hardware Info ----\n");
-    fossil_ai_jellyfish_system_info_t sysinfo = fossil_ai_jellyfish_get_system_info();
-    printf("CPU Cores        : %zu\n", sysinfo.cpu_cores);
-    printf("RAM              : %zu bytes\n", sysinfo.ram_bytes);
-    printf("Endianness       : %s\n", sysinfo.is_little_endian ? "Little" : "Big");
-
-    printf("=== End of Audit ===\n");
+    printf("===========================\n");
 }

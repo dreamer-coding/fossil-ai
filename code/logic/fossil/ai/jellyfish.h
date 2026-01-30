@@ -126,6 +126,28 @@ fossil_ai_jellyfish_context_destroy(
 );
 
 /* ============================================================
+   Learning Control Plane
+   ============================================================ */
+
+int fossil_ai_jellyfish_learn(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_context_t* context
+);
+
+int fossil_ai_jellyfish_relearn(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_id_t dataset_id
+);
+
+int fossil_ai_jellyfish_unlearn(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_context_t* context
+);
+
+/* ============================================================
    Training Control Plane
    ============================================================ */
 
@@ -175,6 +197,12 @@ fossil_ai_jellyfish_auto_detect(
     fossil_ai_jellyfish_model_t* model
 );
 
+int fossil_ai_jellyfish_prune(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    float sparsity  /* fraction of weights to prune */
+);
+
 /* ============================================================
    Query & Summarization
    ============================================================ */
@@ -186,6 +214,14 @@ fossil_ai_jellyfish_ask(
     fossil_ai_jellyfish_context_t* context,
     const char* question,
     fossil_ai_jellyfish_blob_t* answer
+);
+
+int fossil_ai_jellyfish_reason(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_context_t* context,
+    const char* question,
+    fossil_ai_jellyfish_blob_t* explanation
 );
 
 int

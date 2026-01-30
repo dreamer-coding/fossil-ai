@@ -23,392 +23,247 @@
  * -----------------------------------------------------------------------------
  */
 #include "fossil/ai/jellyfish.h"
+#include "jellyfish.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <float.h>
 #include <stdint.h>
-#include <stdbool.h>
 
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
+/* ============================================================
+   Helpers
+   ============================================================ */
+static char* fossil_ai_jellyfish_strdup(const char* src) {
+    if (!src) return NULL;
+    size_t len = strlen(src) + 1;
+    char* dst = (char*)malloc(len);
+    if (!dst) return NULL;
+    memcpy(dst, src, len);
+    return dst;
+}
 
-static void fossil_ai_jellyfish_precompute_norms(fossil_ai_jellyfish_model_t* model) {
-    for (size_t i = 0; i < model->memory_count; ++i) {
-        if (!model->memory[i].trusted) continue; // skip untrusted
-        float mag = 0.0f;
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-            mag += model->memory[i].embedding[j] * model->memory[i].embedding[j];
-        mag = sqrtf(mag);
-        if (mag > 0.0f) {
-            for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-                model->memory[i].embedding[j] /= mag;
+/* ============================================================
+   SHA-256 Implementation (Self-contained)
+   ============================================================ */
+typedef struct {
+    uint32_t state[8];
+    uint64_t bitlen;
+    uint8_t data[64];
+    size_t datalen;
+} SHA256_CTX;
+
+#define ROTRIGHT(a,b) (((a) >> (b)) | ((a) << (32-(b))))
+#define CH(x,y,z) (((x) & (y)) ^ (~(x) & (z)))
+#define MAJ(x,y,z) (((x)&(y)) ^ ((x)&(z)) ^ ((y)&(z)))
+#define EP0(x) (ROTRIGHT(x,2)^ROTRIGHT(x,13)^ROTRIGHT(x,22))
+#define EP1(x) (ROTRIGHT(x,6)^ROTRIGHT(x,11)^ROTRIGHT(x,25))
+#define SIG0(x) (ROTRIGHT(x,7)^ROTRIGHT(x,18)^((x)>>3))
+#define SIG1(x) (ROTRIGHT(x,17)^ROTRIGHT(x,19)^((x)>>10))
+
+static const uint32_t k[64] = {
+  0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,
+  0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,
+  0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,
+  0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,
+  0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,
+  0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,
+  0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,
+  0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+  0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,
+  0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,
+  0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,
+  0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,
+  0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
+
+static void sha256_transform(SHA256_CTX *ctx, const uint8_t data[]) {
+    uint32_t a,b,c,d,e,f,g,h,i,j,t1,t2,m[64];
+    for(i=0,j=0;i<16;i++,j+=4)
+        m[i]=(data[j]<<24)|(data[j+1]<<16)|(data[j+2]<<8)|data[j+3];
+    for(;i<64;i++)
+        m[i]=SIG1(m[i-2])+m[i-7]+SIG0(m[i-15])+m[i-16];
+    a=ctx->state[0];b=ctx->state[1];c=ctx->state[2];d=ctx->state[3];
+    e=ctx->state[4];f=ctx->state[5];g=ctx->state[6];h=ctx->state[7];
+    for(i=0;i<64;i++){
+        t1=h+EP1(e)+CH(e,f,g)+k[i]+m[i];
+        t2=EP0(a)+MAJ(a,b,c);
+        h=g;g=f;f=e;e=d+t1;
+        d=c;c=b;b=a;a=t1+t2;
+    }
+    ctx->state[0]+=a;ctx->state[1]+=b;ctx->state[2]+=c;ctx->state[3]+=d;
+    ctx->state[4]+=e;ctx->state[5]+=f;ctx->state[6]+=g;ctx->state[7]+=h;
+}
+
+static void sha256_init(SHA256_CTX *ctx){
+    ctx->datalen=0; ctx->bitlen=0;
+    ctx->state[0]=0x6a09e667;ctx->state[1]=0xbb67ae85;
+    ctx->state[2]=0x3c6ef372;ctx->state[3]=0xa54ff53a;
+    ctx->state[4]=0x510e527f;ctx->state[5]=0x9b05688c;
+    ctx->state[6]=0x1f83d9ab;ctx->state[7]=0x5be0cd19;
+}
+
+static void sha256_update(SHA256_CTX *ctx, const uint8_t data[], size_t len){
+    for(size_t i=0;i<len;i++){
+        ctx->data[ctx->datalen]=data[i];
+        ctx->datalen++;
+        if(ctx->datalen==64){
+            sha256_transform(ctx,ctx->data);
+            ctx->bitlen+=512;
+            ctx->datalen=0;
         }
     }
 }
 
-/* ======================================================
- * AI firewall protection
- * ====================================================== */
-bool fossil_ai_jellyfish_firewall_check(const float* embedding, const char* modality) {
-    // Example: reject embeddings with abnormal norms (emotional / extreme)
-    float mag = 0.0f;
-    for (size_t i = 0; i < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++i)
-        mag += embedding[i] * embedding[i];
-    mag = sqrtf(mag);
-
-    if (mag > 20.0f) return false; // too “emotional” / abnormal
-
-    // You can extend here for keyword or modality-based rejection
-    return true; // safe
-}
-
-/* ======================================================
- * Lookup Tables
- * ====================================================== */
-
-static const uint32_t fnv_prime = 16777619U;
-static const uint32_t fnv_offset_basis = 2166136261U;
-
-/* ======================================================
- * Initialization / Cleanup
- * ====================================================== */
-
-fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_create_model(const char* name) {
-    if (!name) return NULL;
-
-    fossil_ai_jellyfish_model_t* model = (fossil_ai_jellyfish_model_t*)calloc(1, sizeof(fossil_ai_jellyfish_model_t));
-    if (!model) return NULL;
-
-    strncpy(model->name, name, FOSSIL_AI_JELLYFISH_MODEL_NAME_LEN - 1);
-    model->version = 1;
-    model->memory_count = 0;
-    model->trained = false;
-
-    return model;
-}
-
-void fossil_ai_jellyfish_free_model(fossil_ai_jellyfish_model_t* model) {
-    if (!model) return;
-    free(model);
-}
-
-/* ======================================================
- * Model Persistence
- * ====================================================== */
-
-bool fossil_ai_jellyfish_save_model(const fossil_ai_jellyfish_model_t* model, const char* path) {
-    if (!model || !path) return false;
-    FILE* f = fopen(path, "wb");
-    if (!f) return false;
-
-    // Write model metadata
-    fwrite(&model->version, sizeof(model->version), 1, f);
-    fwrite(&model->memory_count, sizeof(model->memory_count), 1, f);
-    fwrite(&model->trained, sizeof(model->trained), 1, f);
-    fwrite(model->name, sizeof(model->name), 1, f);
-
-    // Write memory
-    fwrite(model->memory, sizeof(fossil_ai_jellyfish_memory_t), model->memory_count, f);
-
-    fclose(f);
-    return true;
-}
-
-fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_load_model(const char* path) {
-    if (!path) return NULL;
-    FILE* f = fopen(path, "rb");
-    if (!f) return NULL;
-
-    fossil_ai_jellyfish_model_t* model = (fossil_ai_jellyfish_model_t*)calloc(1, sizeof(fossil_ai_jellyfish_model_t));
-    if (!model) { fclose(f); return NULL; }
-
-    fread(&model->version, sizeof(model->version), 1, f);
-    fread(&model->memory_count, sizeof(model->memory_count), 1, f);
-    fread(&model->trained, sizeof(model->trained), 1, f);
-    fread(model->name, sizeof(model->name), 1, f);
-
-    fread(model->memory, sizeof(fossil_ai_jellyfish_memory_t), model->memory_count, f);
-    fclose(f);
-    return model;
-}
-
-/* ======================================================
- * Memory Management
- * ====================================================== */
-
-bool fossil_ai_jellyfish_add_memory(
-    fossil_ai_jellyfish_model_t* model,
-    const float* embedding,
-    const float* output,
-    const char* id,
-    int64_t timestamp,
-    const char* modality
-) {
-    if (!model || !embedding || !output || !id) return false;
-    if (model->memory_count >= FOSSIL_AI_JELLYFISH_MAX_MEMORY) return false;
-
-    bool trusted = fossil_ai_jellyfish_firewall_check(embedding, modality);
-    if (!trusted) {
-        printf("[FIREWALL] Embedding '%s' rejected as untrusted.\n", id);
-        return false; // do not insert
+static void sha256_final(SHA256_CTX *ctx, uint8_t hash[]){
+    size_t i=ctx->datalen;
+    ctx->data[i++]=0x80;
+    if(i>56){
+        while(i<64) ctx->data[i++]=0x00;
+        sha256_transform(ctx,ctx->data);
+        i=0;
     }
-
-    fossil_ai_jellyfish_memory_t* mem = &model->memory[model->memory_count++];
-    memcpy(mem->embedding, embedding, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
-    memcpy(mem->output, output, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
-    mem->timestamp = timestamp;
-    strncpy(mem->id, id, sizeof(mem->id) - 1);
-    strncpy(mem->modality, modality, sizeof(mem->modality) - 1);
-    mem->trusted = true;
-
-    return true;
-}
-
-fossil_ai_jellyfish_memory_t* fossil_ai_jellyfish_get_memory(const fossil_ai_jellyfish_model_t* model, const char* id) {
-    if (!model || !id) return NULL;
-
-    for (size_t i = 0; i < model->memory_count; ++i) {
-        if (strncmp(model->memory[i].id, id, sizeof(model->memory[i].id)) == 0)
-            return (fossil_ai_jellyfish_memory_t*)&model->memory[i];
-    }
-    return NULL;
-}
-
-/* ======================================================
- * Memory / Embedding Utilities
- * ====================================================== */
-
-/* Normalize embedding in-place and return magnitude */
-static float fossil_ai_jellyfish_normalize_embedding(float* vec) {
-    float mag = 0.0f;
-    for (size_t i = 0; i < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++i) {
-        mag += vec[i] * vec[i];
-    }
-    if (mag > 0.0f) {
-        mag = sqrtf(mag);
-        for (size_t i = 0; i < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++i) {
-            vec[i] /= mag;
-        }
-    }
-    return mag;
-}
-
-/* ======================================================
- * Training / Inference (Weighted k-NN)
- * ====================================================== */
-
-/* Precompute normalized embeddings for all memory vectors */
-static void fossil_ai_jellyfish_precompute_norms(fossil_ai_jellyfish_model_t* model) {
-    for (size_t i = 0; i < model->memory_count; ++i) {
-        float mag = 0.0f;
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-            mag += model->memory[i].embedding[j] * model->memory[i].embedding[j];
-        mag = sqrtf(mag);
-        if (mag > 0.0f) {
-            for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-                model->memory[i].embedding[j] /= mag;
+    while(i<56) ctx->data[i++]=0x00;
+    ctx->bitlen+=ctx->datalen*8;
+    ctx->data[63]=ctx->bitlen;
+    ctx->data[62]=ctx->bitlen>>8;
+    ctx->data[61]=ctx->bitlen>>16;
+    ctx->data[60]=ctx->bitlen>>24;
+    ctx->data[59]=ctx->bitlen>>32;
+    ctx->data[58]=ctx->bitlen>>40;
+    ctx->data[57]=ctx->bitlen>>48;
+    ctx->data[56]=ctx->bitlen>>56;
+    sha256_transform(ctx,ctx->data);
+    for(i=0;i<4;i++){
+        for(int j=0;j<8;j++){
+            hash[i+4*j]=(ctx->state[j]>>(24-i*8))&0x000000ff;
         }
     }
 }
 
-/* Train the model: normalize embeddings */
-bool fossil_ai_jellyfish_train_model(fossil_ai_jellyfish_model_t* model) {
-    if (!model) return false;
-    if (model->memory_count == 0) {
-        model->trained = false;
-        return false;
-    }
-
-    fossil_ai_jellyfish_precompute_norms(model);
-    model->trained = true;
-    return true;
-}
-
-/* Predict output embedding using weighted k-nearest neighbors */
-bool fossil_ai_jellyfish_predict(const fossil_ai_jellyfish_model_t* model, const float* input_embedding, float* output_embedding) {
-    if (!model || !input_embedding || !output_embedding) return false;
-    if (!model->trained || model->memory_count == 0) return false;
-
-    // Normalize input embedding
-    float norm_input[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
-    memcpy(norm_input, input_embedding, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
-    fossil_ai_jellyfish_normalize_embedding(norm_input);
-
-    // Default k = min(3, memory_count)
-    size_t k = model->memory_count < 3 ? model->memory_count : 3;
-
-    // Arrays to track top k similarities
-    size_t best_indices[3] = {0};
-    float best_scores[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
-
-    // Compute cosine similarity
-    for (size_t i = 0; i < model->memory_count; ++i) {
-        float dot = 0.0f;
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-            dot += norm_input[j] * model->memory[i].embedding[j];
-
-        // Check if this is in top k
-        for (size_t t = 0; t < k; ++t) {
-            if (dot > best_scores[t]) {
-                // Shift lower scores down
-                for (size_t s = k - 1; s > t; --s) {
-                    best_scores[s] = best_scores[s - 1];
-                    best_indices[s] = best_indices[s - 1];
-                }
-                best_scores[t] = dot;
-                best_indices[t] = i;
-                break;
-            }
-        }
-    }
-
-    // Weighted sum of top k outputs
-    memset(output_embedding, 0, sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
-    float total_weight = 0.0f;
-    for (size_t t = 0; t < k; ++t) {
-        float weight = best_scores[t] > 0.0f ? best_scores[t] : 0.0f;
-        total_weight += weight;
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-            output_embedding[j] += model->memory[best_indices[t]].output[j] * weight;
-    }
-
-    // Normalize output by total weight
-    if (total_weight > 0.0f) {
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-            output_embedding[j] /= total_weight;
-    }
-
-    return true;
-}
-
-/* ======================================================
- * Endianness
- * ====================================================== */
-
-bool fossil_ai_jellyfish_is_little_endian(void) {
-    uint16_t x = 1;
-    return *((uint8_t*)&x) == 1;
-}
-
-/* ======================================================
- * System / Hardware Awareness
- * ====================================================== */
-
-fossil_ai_jellyfish_system_info_t fossil_ai_jellyfish_get_system_info(void) {
-    fossil_ai_jellyfish_system_info_t info = {0};
-
-    /* CPU cores */
-#if defined(_WIN32)
-    SYSTEM_INFO sysinfo;
-    GetSystemInfo(&sysinfo);
-    info.cpu_cores = (size_t)sysinfo.dwNumberOfProcessors;
-#else
-    long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
-    info.cpu_cores = (nprocs > 0) ? (size_t)nprocs : 1;
-#endif
-
-    /* RAM size */
-#if defined(_WIN32)
-    MEMORYSTATUSEX memStatus;
-    memStatus.dwLength = sizeof(memStatus);
-    if (GlobalMemoryStatusEx(&memStatus)) {
-        info.ram_bytes = (size_t)memStatus.ullTotalPhys;
-    } else {
-        info.ram_bytes = 0;
-    }
-#else
-    long pages = sysconf(_SC_PHYS_PAGES);
-    long page_size = sysconf(_SC_PAGESIZE);
-    if (pages > 0 && page_size > 0) {
-        info.ram_bytes = (size_t)pages * (size_t)page_size;
-    } else {
-        info.ram_bytes = 0;
-    }
-#endif
-
-    /* Endianness */
-    info.is_little_endian = fossil_ai_jellyfish_is_little_endian();
-
-    return info;
-}
-
-/* ======================================================
- * Utility / Hashing
- * ====================================================== */
-
-uint32_t fossil_ai_jellyfish_hash_string(const char* s) {
-    uint32_t h = fnv_offset_basis;
-    for (; *s; ++s) {
-        h ^= (uint8_t)(*s);
-        h *= fnv_prime;
-    }
+/* ============================================================
+   Compute Hash
+   ============================================================ */
+static fossil_ai_jellyfish_hash_t compute_sha256(const void* data, size_t size) {
+    static unsigned char hash[32];
+    SHA256_CTX ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx,(const uint8_t*)data,size);
+    sha256_final(&ctx, hash);
+    fossil_ai_jellyfish_hash_t h;
+    h.algorithm="sha256";
+    h.bytes=hash;
+    h.length=32;
     return h;
 }
 
-/* ======================================================
- * Auto-Detection
- * ====================================================== */
+/* ============================================================
+   Core / Model / Context / Audit Implementations
+   ============================================================ */
 
-void fossil_ai_jellyfish_detect_capabilities(fossil_ai_jellyfish_model_t* model) {
-    if (!model) return;
+struct fossil_ai_jellyfish_core{
+    char* id;
+};
 
-    printf("=== Jellyfish AI Model Capabilities ===\n");
+struct fossil_ai_jellyfish_model{
+    char* id;
+    char* type;
+    void* data;
+};
 
-    // Model metadata
-    printf("Model Name       : %s\n", model->name);
-    printf("Model Version    : %llu\n", (unsigned long long)model->version);
-    printf("Trained          : %s\n", model->trained ? "yes" : "no");
+struct fossil_ai_jellyfish_context{
+    char* id;
+    fossil_ai_jellyfish_blob_t* blobs;
+    size_t num_blobs;
+};
 
-    // Memory statistics
-    printf("Memory Count     : %zu / %d\n", model->memory_count, FOSSIL_AI_JELLYFISH_MAX_MEMORY);
-    if (model->memory_count > 0) {
-        size_t total_embeddings = model->memory_count * FOSSIL_AI_JELLYFISH_EMBED_SIZE;
-        printf("Total Embeddings : %zu floats\n", total_embeddings);
+struct fossil_ai_jellyfish_audit{
+    char* target_id;
+    fossil_ai_jellyfish_hash_t hash;
+};
+
+/* -- Core Lifecycle -- */
+fossil_ai_jellyfish_core_t* fossil_ai_jellyfish_create(const fossil_ai_jellyfish_id_t core_id){
+    fossil_ai_jellyfish_core_t* c=(fossil_ai_jellyfish_core_t*)malloc(sizeof(fossil_ai_jellyfish_core_t));
+    if(!c) return NULL;
+    c->id=fossil_ai_jellyfish_strdup(core_id);
+    return c;
+}
+void fossil_ai_jellyfish_destroy(fossil_ai_jellyfish_core_t* core){
+    if(!core) return;
+    free(core->id);
+    free(core);
+}
+
+/* -- Model Management -- */
+fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_model_create(fossil_ai_jellyfish_core_t* core, fossil_ai_jellyfish_id_t model_id, fossil_ai_jellyfish_id_t model_type){
+    fossil_ai_jellyfish_model_t* m=(fossil_ai_jellyfish_model_t*)malloc(sizeof(fossil_ai_jellyfish_model_t));
+    m->id=fossil_ai_jellyfish_strdup(model_id);
+    m->type=fossil_ai_jellyfish_strdup(model_type);
+    m->data=NULL;
+    return m;
+}
+void fossil_ai_jellyfish_model_destroy(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model){
+    if(!model) return;
+    free(model->id);
+    free(model->type);
+    free(model);
+}
+
+/* -- Context -- */
+fossil_ai_jellyfish_context_t* fossil_ai_jellyfish_context_create(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_id_t context_id){
+    fossil_ai_jellyfish_context_t* ctx=(fossil_ai_jellyfish_context_t*)malloc(sizeof(fossil_ai_jellyfish_context_t));
+    ctx->id=fossil_ai_jellyfish_strdup(context_id);
+    ctx->blobs=NULL;
+    ctx->num_blobs=0;
+    return ctx;
+}
+int fossil_ai_jellyfish_context_add(fossil_ai_jellyfish_context_t* ctx,fossil_ai_jellyfish_blob_t blob){
+    fossil_ai_jellyfish_blob_t* tmp=(fossil_ai_jellyfish_blob_t*)realloc(ctx->blobs,sizeof(fossil_ai_jellyfish_blob_t)*(ctx->num_blobs+1));
+    if(!tmp) return -1;
+    ctx->blobs=tmp;
+    ctx->blobs[ctx->num_blobs]=blob;
+    ctx->num_blobs++;
+    return 0;
+}
+fossil_ai_jellyfish_hash_t fossil_ai_jellyfish_context_hash(fossil_ai_jellyfish_context_t* ctx){
+    size_t total_size=0;
+    for(size_t i=0;i<ctx->num_blobs;i++) total_size+=ctx->blobs[i].size;
+    unsigned char* buf=(unsigned char*)malloc(total_size);
+    size_t off=0;
+    for(size_t i=0;i<ctx->num_blobs;i++){
+        memcpy(buf+off,ctx->blobs[i].data,ctx->blobs[i].size);
+        off+=ctx->blobs[i].size;
     }
-
-    // System / hardware info
-    fossil_ai_jellyfish_system_info_t sysinfo = fossil_ai_jellyfish_get_system_info();
-    printf("CPU Cores        : %zu\n", sysinfo.cpu_cores);
-    printf("RAM              : %zu bytes\n", sysinfo.ram_bytes);
-    printf("Endianness       : %s\n", sysinfo.is_little_endian ? "Little" : "Big");
-
-    // Capabilities
-    printf("Supports k-NN Prediction   : yes\n");
-    printf("Supports Weighted Outputs  : yes\n");
-    printf("Persistent Storage Ready   : yes\n");
-
-    printf("=== End of Capabilities ===\n");
+    fossil_ai_jellyfish_hash_t h=compute_sha256(buf,total_size);
+    free(buf);
+    return h;
+}
+void fossil_ai_jellyfish_context_destroy(fossil_ai_jellyfish_context_t* ctx){
+    if(!ctx) return;
+    free(ctx->id);
+    free(ctx->blobs);
+    free(ctx);
 }
 
-/* ======================================================
- * Utility: compute embedding magnitude
- * ====================================================== */
-static float fossil_ai_jellyfish_embedding_magnitude(const float* embedding) {
-    float mag = 0.0f;
-    for (size_t i = 0; i < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++i)
-        mag += embedding[i] * embedding[i];
-    return sqrtf(mag);
+/* -- Audit -- */
+fossil_ai_jellyfish_audit_t* fossil_ai_jellyfish_audit(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_id_t target_id){
+    fossil_ai_jellyfish_audit_t* a=(fossil_ai_jellyfish_audit_t*)malloc(sizeof(fossil_ai_jellyfish_audit_t));
+    a->target_id=fossil_ai_jellyfish_strdup(target_id);
+    a->hash=compute_sha256(target_id,strlen(target_id));
+    return a;
 }
+fossil_ai_jellyfish_hash_t fossil_ai_jellyfish_audit_hash(fossil_ai_jellyfish_audit_t* audit){ return audit->hash; }
+void fossil_ai_jellyfish_audit_destroy(fossil_ai_jellyfish_audit_t* audit){ free(audit->target_id); free(audit); }
 
-/* ======================================================
- * Audit function
- * ====================================================== */
-void fossil_ai_jellyfish_audit(const fossil_ai_jellyfish_model_t* model) {
-    if (!model) return;
-
-    printf("=== Jellyfish AI Audit ===\n");
-    for (size_t i = 0; i < model->memory_count; ++i) {
-        const fossil_ai_jellyfish_memory_t* mem = &model->memory[i];
-        float mag = 0.0f;
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-            mag += mem->embedding[j] * mem->embedding[j];
-        mag = sqrtf(mag);
-        printf("[%zu] ID: %s | Trusted: %s | Modality: %s | Norm: %.4f\n",
-               i, mem->id, mem->trusted ? "yes" : "no", mem->modality, mag);
-    }
-    printf("===========================\n");
+/* ============================================================
+   Training / Inference / Persistence stubs
+   ============================================================ */
+int fossil_ai_jellyfish_train(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_id_t dataset_id){ return 0; }
+int fossil_ai_jellyfish_retrain(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_id_t dataset_id){ return 0; }
+int fossil_ai_jellyfish_untrain(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_id_t dataset_id){ return 0; }
+int fossil_ai_jellyfish_erase(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_id_t dataset_id){ return 0; }
+int fossil_ai_jellyfish_infer(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_context_t* ctx,fossil_ai_jellyfish_blob_t* output){
+    static const char* stub="stub inference output"; output->data=stub; output->size=strlen(stub); output->media_type="text/plain"; return 0;
 }
+int fossil_ai_jellyfish_auto_detect(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model){ return 0; }
+int fossil_ai_jellyfish_ask(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_context_t* ctx,const char* q,fossil_ai_jellyfish_blob_t* answer){ static const char* stub="stub answer"; answer->data=stub; answer->size=strlen(stub); answer->media_type="text/plain"; return 0; }
+int fossil_ai_jellyfish_summary(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_context_t* ctx,fossil_ai_jellyfish_blob_t* summary){ static const char* stub="stub summary"; summary->data=stub; summary->size=strlen(stub); summary->media_type="text/plain"; return 0; }

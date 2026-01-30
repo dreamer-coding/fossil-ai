@@ -260,94 +260,211 @@ void fossil_ai_jellyfish_audit_destroy(fossil_ai_jellyfish_audit_t* audit){ free
 /* Save model with hash */
 int fossil_ai_jellyfish_save(fossil_ai_jellyfish_core_t* core,
                              fossil_ai_jellyfish_model_t* model,
-                             const char* path) {
-    if(!model || !path) return -1;
-    FILE* f=fopen(path,"wb");
-    if(!f) return -1;
+                             const char* path)
+{
+    (void)core; /* unused for now */
 
-    /* Write header */
-    fwrite("FJMODEL",1,7,f);
-    uint32_t version=1;
-    fwrite(&version,sizeof(uint32_t),1,f);
+    if (!model || !path) return -1;
 
-    uint32_t id_len=strlen(model->id);
-    uint32_t type_len=strlen(model->type);
-    fwrite(&id_len,sizeof(uint32_t),1,f);
-    fwrite(&type_len,sizeof(uint32_t),1,f);
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
 
-    fwrite(model->id,1,id_len,f);
-    fwrite(model->type,1,type_len,f);
+    uint32_t version = 1;
+    uint32_t id_len = (uint32_t)strlen(model->id);
+    uint32_t type_len = (uint32_t)strlen(model->type);
+    uint64_t data_len = 0;
 
-    /* Placeholder data */
-    uint64_t data_len=0;
-    fwrite(&data_len,sizeof(uint64_t),1,f);
+    /* ---- write header ---- */
+    if (fwrite("FJMODEL", 1, 7, f) != 7 ||
+        fwrite(&version, sizeof(uint32_t), 1, f) != 1 ||
+        fwrite(&id_len, sizeof(uint32_t), 1, f) != 1 ||
+        fwrite(&type_len, sizeof(uint32_t), 1, f) != 1 ||
+        fwrite(model->id, 1, id_len, f) != id_len ||
+        fwrite(model->type, 1, type_len, f) != type_len ||
+        fwrite(&data_len, sizeof(uint64_t), 1, f) != 1) {
+        fclose(f);
+        return -1;
+    }
 
-    /* Compute hash over all previous bytes */
-    fseek(f,0,SEEK_SET);
-    fseek(f,0,0); // Go to start
-    uint64_t filesize=ftell(f);
-    uint8_t* buf=(uint8_t*)malloc(filesize);
-    fseek(f,0,SEEK_SET);
-    fread(buf,1,filesize,f);
-    fossil_ai_jellyfish_hash_t h=compute_sha256(buf,filesize);
+    /* Make sure everything hits disk before hashing */
+    if (fflush(f) != 0) {
+        fclose(f);
+        return -1;
+    }
+
+    /* ---- determine file size ---- */
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return -1;
+    }
+
+    long file_size = ftell(f);
+    if (file_size <= 0) {
+        fclose(f);
+        return -1;
+    }
+
+    /* ---- read back for hashing ---- */
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return -1;
+    }
+
+    uint8_t* buf = (uint8_t*)malloc((size_t)file_size);
+    if (!buf) {
+        fclose(f);
+        return -1;
+    }
+
+    if (fread(buf, 1, (size_t)file_size, f) != (size_t)file_size) {
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+
+    fossil_ai_jellyfish_hash_t h =
+        compute_sha256(buf, (unsigned long)file_size);
+
     free(buf);
 
-    fwrite(h.bytes,1,h.length,f);
+    if (!h.bytes || h.length == 0) {
+        fclose(f);
+        return -1;
+    }
+
+    /* ---- append hash ---- */
+    if (fseek(f, 0, SEEK_END) != 0 ||
+        fwrite(h.bytes, 1, h.length, f) != h.length) {
+        fclose(f);
+        return -1;
+    }
+
     fclose(f);
     return 0;
 }
 
 /* Load model with hash verification */
-fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_load(fossil_ai_jellyfish_core_t* core,
-                                                      const char* path) {
-    if(!path) return NULL;
-    FILE* f=fopen(path,"rb");
-    if(!f) return NULL;
+fossil_ai_jellyfish_model_t*
+fossil_ai_jellyfish_load(fossil_ai_jellyfish_core_t* core,
+                          const char* path)
+{
+    if (!core || !path) return NULL;
 
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+
+    fossil_ai_jellyfish_model_t* model = NULL;
+    char* id = NULL;
+    char* type = NULL;
+    uint8_t* buf = NULL;
+
+    /* ---- header ---- */
     char header[7];
-    fread(header,1,7,f);
-    if(strncmp(header,"FJMODEL",7)!=0){ fclose(f); return NULL; }
+    if (fread(header, 1, 7, f) != 7) { fclose(f); return NULL; }
+    if (memcmp(header, "FJMODEL", 7) != 0) { fclose(f); return NULL; }
 
-    uint32_t version;
-    fread(&version,sizeof(uint32_t),1,f);
-    if(version!=1){ fclose(f); return NULL; }
+    uint32_t version = 0;
+    if (fread(&version, sizeof(uint32_t), 1, f) != 1) { fclose(f); return NULL; }
+    if (version != 1) { fclose(f); return NULL; }
 
-    uint32_t id_len,type_len;
-    fread(&id_len,sizeof(uint32_t),1,f);
-    fread(&type_len,sizeof(uint32_t),1,f);
+    /* ---- ids ---- */
+    uint32_t id_len = 0, type_len = 0;
+    if (fread(&id_len, sizeof(uint32_t), 1, f) != 1) { fclose(f); return NULL; }
+    if (fread(&type_len, sizeof(uint32_t), 1, f) != 1) { fclose(f); return NULL; }
 
-    char* id=(char*)malloc(id_len+1);
-    char* type=(char*)malloc(type_len+1);
-    fread(id,1,id_len,f); id[id_len]=0;
-    fread(type,1,type_len,f); type[type_len]=0;
+    if (id_len == 0 || type_len == 0 ||
+        id_len > 4096 || type_len > 4096) {
+        fclose(f);
+        return NULL;
+    }
 
-    fossil_ai_jellyfish_model_t* m=fossil_ai_jellyfish_model_create(core,id,type);
+    id = (char*)malloc(id_len + 1);
+    type = (char*)malloc(type_len + 1);
+    if (!id || !type) {
+        free(id); free(type);
+        fclose(f);
+        return NULL;
+    }
 
-    free(id); free(type);
+    if (fread(id, 1, id_len, f) != id_len ||
+        fread(type, 1, type_len, f) != type_len) {
+        free(id); free(type);
+        fclose(f);
+        return NULL;
+    }
 
-    /* Skip data_len and data for stub */
-    fseek(f,8,SEEK_CUR);
+    id[id_len] = '\0';
+    type[type_len] = '\0';
 
-    /* Read stored hash */
+    model = fossil_ai_jellyfish_model_create(core, id, type);
+    free(id);
+    free(type);
+    id = type = NULL;
+
+    if (!model) {
+        fclose(f);
+        return NULL;
+    }
+
+    /* ---- skip model payload ---- */
+    uint64_t data_len = 0;
+    if (fread(&data_len, sizeof(uint64_t), 1, f) != 1 ||
+        fseek(f, (long)data_len, SEEK_CUR) != 0) {
+        fossil_ai_jellyfish_model_destroy(core, model);
+        fclose(f);
+        return NULL;
+    }
+
+    /* ---- stored hash ---- */
     unsigned char stored_hash[32];
-    fread(stored_hash,1,32,f);
+    if (fread(stored_hash, 1, 32, f) != 32) {
+        fossil_ai_jellyfish_model_destroy(core, model);
+        fclose(f);
+        return NULL;
+    }
 
-    /* Verify hash */
-    fseek(f,0,SEEK_END);
-    long filesize=ftell(f);
-    fseek(f,0,SEEK_SET);
-    uint8_t* buf=(uint8_t*)malloc(filesize-32);
-    fread(buf,1,filesize-32,f);
-    fossil_ai_jellyfish_hash_t h=compute_sha256(buf,filesize-32);
+    /* ---- verify hash ---- */
+    long end_pos = ftell(f);
+    if (end_pos < 32) {
+        fossil_ai_jellyfish_model_destroy(core, model);
+        fclose(f);
+        return NULL;
+    }
+
+    long verify_len = end_pos - 32;
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fossil_ai_jellyfish_model_destroy(core, model);
+        fclose(f);
+        return NULL;
+    }
+
+    buf = (uint8_t*)malloc((size_t)verify_len);
+    if (!buf) {
+        fossil_ai_jellyfish_model_destroy(core, model);
+        fclose(f);
+        return NULL;
+    }
+
+    if (fread(buf, 1, (size_t)verify_len, f) != (size_t)verify_len) {
+        free(buf);
+        fossil_ai_jellyfish_model_destroy(core, model);
+        fclose(f);
+        return NULL;
+    }
+
+    fossil_ai_jellyfish_hash_t h =
+        compute_sha256(buf, (unsigned long)verify_len);
+
     free(buf);
     fclose(f);
 
-    if(memcmp(stored_hash,h.bytes,32)!=0){
-        fossil_ai_jellyfish_model_destroy(core,m);
-        return NULL; /* hash mismatch */
+    if (h.length != 32 ||
+        memcmp(h.bytes, stored_hash, 32) != 0) {
+        fossil_ai_jellyfish_model_destroy(core, model);
+        return NULL;
     }
 
-    return m;
+    return model;
 }
 
 /* ============================================================
@@ -408,12 +525,104 @@ int fossil_ai_jellyfish_untrain(fossil_ai_jellyfish_core_t* core,
     fwrite(h.bytes,1,32,f); fclose(f); return 0;
 }
 
+static int jellyfish_replace_file(const char* tmp, const char* final) {
+    remove(final);              /* ignore failure */
+    return rename(tmp, final);  /* atomic on POSIX, best effort elsewhere */
+}
+
 int fossil_ai_jellyfish_erase(fossil_ai_jellyfish_core_t* core,
-                              fossil_ai_jellyfish_id_t dataset_id) {
-    /* Remove all log entries for this dataset */
-    if(!core || !dataset_id) return -1;
-    /* Naive implementation: iterate log and skip entries with this dataset_id */
-    /* TODO: implement actual file-based erase safely */
+                              fossil_ai_jellyfish_id_t dataset_id)
+{
+    if (!core || !dataset_id) return -1;
+
+    size_t dataset_len = strlen(dataset_id);
+
+    /* Iterate all known models */
+    for (size_t m = 0; m < core->model_count; ++m) {
+        fossil_ai_jellyfish_model_t* model = core->models[m];
+
+        char log_path[512];
+        char tmp_path[512];
+
+        snprintf(log_path, sizeof(log_path),
+                 "%s_%s_training.log", core->id, model->id);
+
+        snprintf(tmp_path, sizeof(tmp_path),
+                 "%s_%s_training.tmp", core->id, model->id);
+
+        FILE* in = fopen(log_path, "rb");
+        if (!in) continue; /* No log = nothing to erase */
+
+        FILE* out = fopen(tmp_path, "wb");
+        if (!out) {
+            fclose(in);
+            return -1;
+        }
+
+        for (;;) {
+            uint8_t op;
+            uint32_t id_len;
+            uint32_t payload_len;
+
+            /* Read op */
+            if (fread(&op, 1, 1, in) != 1) break;
+
+            /* Read dataset_id length */
+            if (fread(&id_len, sizeof(uint32_t), 1, in) != 1) break;
+
+            char* id_buf = (char*)malloc(id_len + 1);
+            if (!id_buf) { fclose(in); fclose(out); return -1; }
+
+            if (fread(id_buf, 1, id_len, in) != id_len) {
+                free(id_buf); break;
+            }
+            id_buf[id_len] = 0;
+
+            /* Read payload length */
+            if (fread(&payload_len, sizeof(uint32_t), 1, in) != 1) {
+                free(id_buf); break;
+            }
+
+            /* Decide whether to keep */
+            int erase = (id_len == dataset_len &&
+                         memcmp(id_buf, dataset_id, id_len) == 0);
+
+            if (erase) {
+                /* Skip payload */
+                fseek(in, payload_len, SEEK_CUR);
+            } else {
+                /* Copy entry verbatim */
+                fwrite(&op, 1, 1, out);
+                fwrite(&id_len, sizeof(uint32_t), 1, out);
+                fwrite(id_buf, 1, id_len, out);
+                fwrite(&payload_len, sizeof(uint32_t), 1, out);
+
+                /* Stream payload copy */
+                const size_t buf_sz = 4096;
+                unsigned char buf[buf_sz];
+                uint32_t remaining = payload_len;
+
+                while (remaining > 0) {
+                    size_t chunk = remaining > buf_sz ? buf_sz : remaining;
+                    fread(buf, 1, chunk, in);
+                    fwrite(buf, 1, chunk, out);
+                    remaining -= (uint32_t)chunk;
+                }
+            }
+
+            free(id_buf);
+        }
+
+        fclose(in);
+        fclose(out);
+
+        /* Replace original log atomically */
+        if (jellyfish_replace_file(tmp_path, log_path) != 0) {
+            remove(tmp_path);
+            return -1;
+        }
+    }
+
     return 0;
 }
 

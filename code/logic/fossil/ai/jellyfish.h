@@ -96,7 +96,14 @@ fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_load_model(const char* path);
  * ====================================================== */
 
 /* Add memory vector to model */
-bool fossil_ai_jellyfish_add_memory(fossil_ai_jellyfish_model_t* model, const float* embedding, const float* output, const char* id, int64_t timestamp);
+bool fossil_ai_jellyfish_add_memory(
+    fossil_ai_jellyfish_model_t* model,
+    const float* embedding,
+    const float* output,
+    const char* id,
+    int64_t timestamp,
+    const char* modality
+)
 
 /* Retrieve memory by string ID */
 fossil_ai_jellyfish_memory_t* fossil_ai_jellyfish_get_memory(const fossil_ai_jellyfish_model_t* model, const char* id);
@@ -205,10 +212,11 @@ namespace fossil {
             bool add_memory(const float* embedding,
                             const float* output,
                             const std::string& id,
-                            int64_t timestamp) {
+                            int64_t timestamp,
+                            const std::string& modality) {
                 return model_ &&
                        fossil_ai_jellyfish_add_memory(
-                           model_, embedding, output, id.c_str(), timestamp);
+                           model_, embedding, output, id.c_str(), timestamp, modality);
             }
         
             fossil_ai_jellyfish_memory_t* get_memory(const std::string& id) const {

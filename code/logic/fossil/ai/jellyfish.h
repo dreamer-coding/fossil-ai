@@ -47,10 +47,12 @@ extern "C" {
 
 /* Memory vector for embeddings and attention outputs */
 typedef struct fossil_ai_jellyfish_memory_t {
-    float embedding[FOSSIL_AI_JELLYFISH_EMBED_SIZE]; // Embedding vector
-    float output[FOSSIL_AI_JELLYFISH_EMBED_SIZE];    // Output vector for attention
-    int64_t timestamp;                                // Timestamp of memory
-    char id[64];                                      // String ID
+    float embedding[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
+    float output[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
+    int64_t timestamp;
+    char id[64];
+    char modality[16];   // optional: "text", "audio", "image"
+    bool trusted;        // true = safe, false = quarantined
 } fossil_ai_jellyfish_memory_t;
 
 /* Persistent model structure */

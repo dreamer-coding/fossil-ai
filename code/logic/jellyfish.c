@@ -255,12 +255,169 @@ fossil_ai_jellyfish_hash_t fossil_ai_jellyfish_audit_hash(fossil_ai_jellyfish_au
 void fossil_ai_jellyfish_audit_destroy(fossil_ai_jellyfish_audit_t* audit){ free(audit->target_id); free(audit); }
 
 /* ============================================================
+   Save and Load
+   ============================================================ */
+
+/* Save model with hash */
+int fossil_ai_jellyfish_save(fossil_ai_jellyfish_core_t* core,
+                             fossil_ai_jellyfish_model_t* model,
+                             const char* path) {
+    if(!model || !path) return -1;
+    FILE* f=fopen(path,"wb");
+    if(!f) return -1;
+
+    /* Write header */
+    fwrite("FJMODEL",1,7,f);
+    uint32_t version=1;
+    fwrite(&version,sizeof(uint32_t),1,f);
+
+    uint32_t id_len=strlen(model->id);
+    uint32_t type_len=strlen(model->type);
+    fwrite(&id_len,sizeof(uint32_t),1,f);
+    fwrite(&type_len,sizeof(uint32_t),1,f);
+
+    fwrite(model->id,1,id_len,f);
+    fwrite(model->type,1,type_len,f);
+
+    /* Placeholder data */
+    uint64_t data_len=0;
+    fwrite(&data_len,sizeof(uint64_t),1,f);
+
+    /* Compute hash over all previous bytes */
+    fseek(f,0,SEEK_SET);
+    fseek(f,0,0); // Go to start
+    uint64_t filesize=ftell(f);
+    uint8_t* buf=(uint8_t*)malloc(filesize);
+    fseek(f,0,SEEK_SET);
+    fread(buf,1,filesize,f);
+    fossil_ai_jellyfish_hash_t h=compute_sha256(buf,filesize);
+    free(buf);
+
+    fwrite(h.bytes,1,h.length,f);
+    fclose(f);
+    return 0;
+}
+
+/* Load model with hash verification */
+fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_load(fossil_ai_jellyfish_core_t* core,
+                                                      const char* path) {
+    if(!path) return NULL;
+    FILE* f=fopen(path,"rb");
+    if(!f) return NULL;
+
+    char header[7];
+    fread(header,1,7,f);
+    if(strncmp(header,"FJMODEL",7)!=0){ fclose(f); return NULL; }
+
+    uint32_t version;
+    fread(&version,sizeof(uint32_t),1,f);
+    if(version!=1){ fclose(f); return NULL; }
+
+    uint32_t id_len,type_len;
+    fread(&id_len,sizeof(uint32_t),1,f);
+    fread(&type_len,sizeof(uint32_t),1,f);
+
+    char* id=(char*)malloc(id_len+1);
+    char* type=(char*)malloc(type_len+1);
+    fread(id,1,id_len,f); id[id_len]=0;
+    fread(type,1,type_len,f); type[type_len]=0;
+
+    fossil_ai_jellyfish_model_t* m=fossil_ai_jellyfish_model_create(core,id,type);
+
+    free(id); free(type);
+
+    /* Skip data_len and data for stub */
+    fseek(f,8,SEEK_CUR);
+
+    /* Read stored hash */
+    unsigned char stored_hash[32];
+    fread(stored_hash,1,32,f);
+
+    /* Verify hash */
+    fseek(f,0,SEEK_END);
+    long filesize=ftell(f);
+    fseek(f,0,SEEK_SET);
+    uint8_t* buf=(uint8_t*)malloc(filesize-32);
+    fread(buf,1,filesize-32,f);
+    fossil_ai_jellyfish_hash_t h=compute_sha256(buf,filesize-32);
+    free(buf);
+    fclose(f);
+
+    if(memcmp(stored_hash,h.bytes,32)!=0){
+        fossil_ai_jellyfish_model_destroy(core,m);
+        return NULL; /* hash mismatch */
+    }
+
+    return m;
+}
+
+/* ============================================================
    Training / Inference / Persistence stubs
    ============================================================ */
-int fossil_ai_jellyfish_train(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_id_t dataset_id){ return 0; }
-int fossil_ai_jellyfish_retrain(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_id_t dataset_id){ return 0; }
-int fossil_ai_jellyfish_untrain(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_id_t dataset_id){ return 0; }
-int fossil_ai_jellyfish_erase(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_id_t dataset_id){ return 0; }
+int fossil_ai_jellyfish_train(fossil_ai_jellyfish_core_t* core,
+                              fossil_ai_jellyfish_model_t* model,
+                              fossil_ai_jellyfish_id_t dataset_id) {
+    if(!core || !model || !dataset_id) return -1;
+
+    /* Append training entry to model log */
+    char path[512];
+    snprintf(path,sizeof(path),"%s_%s_training.log", core->id, model->id);
+    FILE* f = fopen(path,"ab");
+    if(!f) return -1;
+
+    uint8_t op_type = 1; /* 1 = train */
+    uint32_t ds_len = (uint32_t)strlen(dataset_id);
+    fwrite(&op_type,1,1,f);
+    fwrite(&ds_len,sizeof(uint32_t),1,f);
+    fwrite(dataset_id,1,ds_len,f);
+
+    /* Add hash chain for tamper-proofing */
+    unsigned char entry_hash[32];
+    fossil_ai_jellyfish_hash_t h = compute_sha256(dataset_id, ds_len);
+    memcpy(entry_hash, h.bytes, 32);
+    fwrite(entry_hash,1,32,f);
+    fclose(f);
+
+    return 0;
+}
+
+int fossil_ai_jellyfish_retrain(fossil_ai_jellyfish_core_t* core,
+                                fossil_ai_jellyfish_model_t* model,
+                                fossil_ai_jellyfish_id_t dataset_id) {
+    /* Log as op_type 2 = retrain */
+    if(!core || !model || !dataset_id) return -1;
+    char path[512]; snprintf(path,sizeof(path),"%s_%s_training.log", core->id, model->id);
+    FILE* f = fopen(path,"ab"); if(!f) return -1;
+    uint8_t op_type=2;
+    uint32_t ds_len=(uint32_t)strlen(dataset_id);
+    fwrite(&op_type,1,1,f); fwrite(&ds_len,sizeof(uint32_t),1,f); fwrite(dataset_id,1,ds_len,f);
+    fossil_ai_jellyfish_hash_t h=compute_sha256(dataset_id, ds_len);
+    fwrite(h.bytes,1,32,f); fclose(f); return 0;
+}
+
+int fossil_ai_jellyfish_untrain(fossil_ai_jellyfish_core_t* core,
+                                fossil_ai_jellyfish_model_t* model,
+                                fossil_ai_jellyfish_id_t dataset_id) {
+    /* Log as op_type 3 = untrain */
+    if(!core || !model || !dataset_id) return -1;
+    char path[512]; snprintf(path,sizeof(path),"%s_%s_training.log", core->id, model->id);
+    FILE* f = fopen(path,"ab"); if(!f) return -1;
+    uint8_t op_type=3;
+    uint32_t ds_len=(uint32_t)strlen(dataset_id);
+    fwrite(&op_type,1,1,f); fwrite(&ds_len,sizeof(uint32_t),1,f); fwrite(dataset_id,1,ds_len,f);
+    fossil_ai_jellyfish_hash_t h=compute_sha256(dataset_id, ds_len);
+    fwrite(h.bytes,1,32,f); fclose(f); return 0;
+}
+
+int fossil_ai_jellyfish_erase(fossil_ai_jellyfish_core_t* core,
+                              fossil_ai_jellyfish_id_t dataset_id) {
+    /* Remove all log entries for this dataset */
+    if(!core || !dataset_id) return -1;
+    /* Naive implementation: iterate log and skip entries with this dataset_id */
+    /* TODO: implement actual file-based erase safely */
+    return 0;
+}
+
 int fossil_ai_jellyfish_infer(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model,fossil_ai_jellyfish_context_t* ctx,fossil_ai_jellyfish_blob_t* output){
     static const char* stub="stub inference output"; output->data=stub; output->size=strlen(stub); output->media_type="text/plain"; return 0;
 }

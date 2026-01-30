@@ -25,238 +25,181 @@
 #include "fossil/ai/iochat.h"
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <time.h>
 
-#define FOSSIL_AI_CHAT_WINDOW 8
-#define FOSSIL_AI_CHAT_CHARSET 256
-#define FOSSIL_AI_CHAT_LR 0.01f
+/* ============================================================
+   Internal Session Structure
+   ============================================================ */
+struct fossil_ai_chat_session {
+    fossil_ai_jellyfish_core_t* core;
+    fossil_ai_jellyfish_model_t* model;
+    fossil_ai_jellyfish_id_t session_id;
+    fossil_ai_chat_message_t* messages;
+    unsigned long message_count;
+    unsigned long message_capacity;
+};
 
-static float g_projection[FOSSIL_AI_CHAT_CHARSET]
-                          [FOSSIL_AI_JELLYFISH_EMBED_SIZE];
-static bool g_projection_init = false;
+/* ============================================================
+   Session Lifecycle
+   ============================================================ */
 
-static void fossil_ai_chat_init_projection(void) {
-    if (g_projection_init) return;
-    for (size_t i = 0; i < FOSSIL_AI_CHAT_CHARSET; ++i) {
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j) {
-            g_projection[i][j] = 0.001f;
-        }
-    }
-    g_projection_init = true;
-}
-
-static void fossil_ai_chat_train_projection(
-    const char* text,
-    const float* target_embedding
+fossil_ai_chat_session_t*
+fossil_ai_chat_session_create(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_id_t session_id
 ) {
-    for (const unsigned char* p = (const unsigned char*)text; *p; ++p) {
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j) {
-            g_projection[*p][j] +=
-                FOSSIL_AI_CHAT_LR * target_embedding[j];
-        }
-    }
-}
-
-static size_t fossil_ai_chat_window_start(
-    const fossil_ai_chat_context_t* ctx
-) {
-    if (ctx->history_count <= FOSSIL_AI_CHAT_WINDOW)
-        return 0;
-    return ctx->history_count - FOSSIL_AI_CHAT_WINDOW;
-}
-
-
-/* ======================================================
- * Internal Utilities
- * ====================================================== */
-
-static int64_t fossil_ai_chat_now(void) {
-    return (int64_t)time(NULL);
-}
-
-/* ======================================================
- * Lifecycle
- * ====================================================== */
-
-fossil_ai_chat_context_t*
-fossil_ai_chat_create(fossil_ai_jellyfish_model_t* model) {
-    if (!model) return NULL;
-
-    fossil_ai_chat_context_t* ctx =
-        (fossil_ai_chat_context_t*)calloc(1, sizeof(*ctx));
-    if (!ctx) return NULL;
-
-    ctx->model = model;
-    ctx->history_capacity = 16;
-    ctx->history = (fossil_ai_chat_message_t*)
-        calloc(ctx->history_capacity, sizeof(*ctx->history));
-
-    if (!ctx->history) {
-        free(ctx);
+    fossil_ai_chat_session_t* session = (fossil_ai_chat_session_t*)malloc(sizeof(fossil_ai_chat_session_t));
+    if (!session) return NULL;
+    session->core = core;
+    session->model = model;
+    session->session_id = session_id;
+    session->message_count = 0;
+    session->message_capacity = 8;
+    session->messages = (fossil_ai_chat_message_t*)malloc(sizeof(fossil_ai_chat_message_t) * session->message_capacity);
+    if (!session->messages) {
+        free(session);
         return NULL;
     }
-
-    return ctx;
+    return session;
 }
 
-void fossil_ai_chat_free(fossil_ai_chat_context_t* ctx) {
-    if (!ctx) return;
-    free(ctx->history);
-    free(ctx);
+void
+fossil_ai_chat_session_destroy(fossil_ai_chat_session_t* session) {
+    if (!session) return;
+    for (unsigned long i = 0; i < session->message_count; ++i) {
+        /* Free blob data if owned; here we assume caller owns content.data, so skip freeing */
+    }
+    free(session->messages);
+    free(session);
 }
 
-/* ======================================================
- * Messaging
- * ====================================================== */
+/* ============================================================
+   Message Handling
+   ============================================================ */
 
-bool fossil_ai_chat_add_message(
-    fossil_ai_chat_context_t* ctx,
+int
+fossil_ai_chat_add_message(
+    fossil_ai_chat_session_t* session,
     fossil_ai_chat_role_t role,
-    const char* text,
-    int64_t timestamp
+    fossil_ai_jellyfish_blob_t content
 ) {
-    if (!ctx || !text) return false;
-
-    if (ctx->history_count >= ctx->history_capacity) {
-        size_t new_cap = ctx->history_capacity * 2;
-        fossil_ai_chat_message_t* new_hist =
-            (fossil_ai_chat_message_t*)realloc(
-                ctx->history,
-                new_cap * sizeof(*ctx->history)
-            );
-        if (!new_hist) return false;
-        ctx->history = new_hist;
-        ctx->history_capacity = new_cap;
+    if (session->message_count >= session->message_capacity) {
+        unsigned long new_capacity = session->message_capacity * 2;
+        fossil_ai_chat_message_t* tmp = (fossil_ai_chat_message_t*)realloc(session->messages, sizeof(fossil_ai_chat_message_t) * new_capacity);
+        if (!tmp) return -1;
+        session->messages = tmp;
+        session->message_capacity = new_capacity;
     }
-
-    fossil_ai_chat_message_t* msg =
-        &ctx->history[ctx->history_count++];
-
-    msg->role = role;
-    msg->timestamp = timestamp ? timestamp : fossil_ai_chat_now();
-    strncpy(msg->text, text, FOSSIL_AI_CHAT_MAX_TEXT - 1);
-
-    return true;
+    session->messages[session->message_count].role = role;
+    session->messages[session->message_count].content = content;
+    session->message_count++;
+    return 0;
 }
 
-/* ======================================================
- * NLP / Embedding
- * ====================================================== */
-
-/*
- * Deterministic hash-based embedding.
- * Cold, fast, auditable, no learned bias.
- */
-bool fossil_ai_chat_embed_text(
-    const char* text,
-    float* embedding_out
-) {
-    if (!text || !embedding_out) return false;
-
-    fossil_ai_chat_init_projection();
-    memset(embedding_out, 0,
-           sizeof(float) * FOSSIL_AI_JELLYFISH_EMBED_SIZE);
-
-    for (const unsigned char* p = (const unsigned char*)text; *p; ++p) {
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j) {
-            embedding_out[j] += g_projection[*p][j];
-        }
-    }
-
-    return true;
+unsigned long
+fossil_ai_chat_message_count(const fossil_ai_chat_session_t* session) {
+    return session->message_count;
 }
 
-/* ======================================================
- * Chat Inference
- * ====================================================== */
-
-bool fossil_ai_chat_reply(
-    fossil_ai_chat_context_t* ctx,
-    char* response_out,
-    size_t response_size
-) {
-    if (!ctx || !response_out || response_size == 0) return false;
-
-    float input_embedding[FOSSIL_AI_JELLYFISH_EMBED_SIZE] = {0};
-    float output_embedding[FOSSIL_AI_JELLYFISH_EMBED_SIZE] = {0};
-
-    /* Embed last N messages */
-    size_t start = fossil_ai_chat_window_start(ctx);
-    for (size_t i = start; i < ctx->history_count; ++i) {
-        float tmp[FOSSIL_AI_JELLYFISH_EMBED_SIZE];
-        fossil_ai_chat_embed_text(ctx->history[i].text, tmp);
-        for (size_t j = 0; j < FOSSIL_AI_JELLYFISH_EMBED_SIZE; ++j)
-            input_embedding[j] += tmp[j];
-    }
-
-    if (!fossil_ai_jellyfish_predict(
-            ctx->model, input_embedding, output_embedding)) {
-        snprintf(response_out, response_size,
-                 "No relevant memory.");
-        return true;
-    }
-
-    snprintf(response_out, response_size,
-             "Response vector signal: %.2f",
-             output_embedding[0]);
-
-    /* Store assistant reply */
-    fossil_ai_chat_add_message(
-        ctx,
-        FOSSIL_AI_CHAT_ROLE_ASSISTANT,
-        response_out,
-        fossil_ai_chat_now()
-    );
-
-    /* === Memory Injection === */
-    char mem_id[64];
-    snprintf(mem_id, sizeof(mem_id),
-             "chat:%lld",
-             (long long)fossil_ai_chat_now());
-
-    fossil_ai_jellyfish_add_memory(
-        ctx->model,
-        input_embedding,
-        output_embedding,
-        mem_id,
-        fossil_ai_chat_now()
-    );
-
-    /* === Train projection === */
-    fossil_ai_chat_train_projection(
-        response_out,
-        output_embedding
-    );
-
-    return true;
+const fossil_ai_chat_message_t*
+fossil_ai_chat_get_message(const fossil_ai_chat_session_t* session, unsigned long index) {
+    if (!session || index >= session->message_count) return NULL;
+    return &session->messages[index];
 }
 
-/* ======================================================
- * Auditing
- * ====================================================== */
+/* ============================================================
+   Context Materialization
+   ============================================================ */
 
-void fossil_ai_chat_audit(const fossil_ai_chat_context_t* ctx) {
-    if (!ctx) return;
+fossil_ai_jellyfish_context_t*
+fossil_ai_chat_materialize_context(fossil_ai_chat_session_t* session) {
+    if (!session) return NULL;
+    fossil_ai_jellyfish_context_t* context = fossil_ai_jellyfish_context_create(session->core, session->session_id);
+    if (!context) return NULL;
 
-    printf("=== Chat Audit ===\n");
-    printf("History Count : %zu\n", ctx->history_count);
-    printf("Model Name    : %s\n", ctx->model->name);
-    printf("Model Trained : %s\n", ctx->model->trained ? "yes" : "no");
-    printf("Projection      : trainable (online)\n");
-    printf("Window Size     : %d\n", FOSSIL_AI_CHAT_WINDOW);
-    printf("Memory Injection: enabled\n");
-
-    if (ctx->history_count > 0) {
-        const fossil_ai_chat_message_t* last =
-            &ctx->history[ctx->history_count - 1];
-        printf("Last Role     : %d\n", last->role);
-        printf("Last Time     : %lld\n",
-               (long long)last->timestamp);
-        printf("Last Text Hash: 0x%08X\n",
-               fossil_ai_jellyfish_hash_string(last->text));
+    for (unsigned long i = 0; i < session->message_count; ++i) {
+        fossil_ai_jellyfish_context_add(context, session->messages[i].content);
     }
+    return context;
+}
 
-    printf("Cold Core     : intact\n");
-    printf("=== End Chat Audit ===\n");
+/* ============================================================
+   Chat Inference
+   ============================================================ */
+
+int
+fossil_ai_chat_turn(
+    fossil_ai_chat_session_t* session,
+    const char* user_input,
+    fossil_ai_jellyfish_blob_t* assistant_output
+) {
+    if (!session || !user_input || !assistant_output) return -1;
+
+    fossil_ai_jellyfish_blob_t user_blob = { .data = user_input, .size = (unsigned long)strlen(user_input), .media_type = "text/plain" };
+    if (fossil_ai_chat_add_message(session, FOSSIL_AI_CHAT_ROLE_USER, user_blob) != 0) return -1;
+
+    fossil_ai_jellyfish_context_t* context = fossil_ai_chat_materialize_context(session);
+    if (!context) return -1;
+
+    fossil_ai_jellyfish_blob_t output = {0};
+    int ret = fossil_ai_jellyfish_ask(session->core, session->model, context, user_input, &output);
+
+    fossil_ai_jellyfish_context_destroy(context);
+
+    if (ret != 0) return ret;
+
+    fossil_ai_chat_add_message(session, FOSSIL_AI_CHAT_ROLE_ASSISTANT, output);
+    if (assistant_output) *assistant_output = output;
+    return 0;
+}
+
+/* ============================================================
+   Summarization & Compression
+   ============================================================ */
+
+int
+fossil_ai_chat_summarize(fossil_ai_chat_session_t* session, fossil_ai_jellyfish_blob_t* summary) {
+    if (!session || !summary) return -1;
+    fossil_ai_jellyfish_context_t* context = fossil_ai_chat_materialize_context(session);
+    if (!context) return -1;
+
+    int ret = fossil_ai_jellyfish_summary(session->core, session->model, context, summary);
+    fossil_ai_jellyfish_context_destroy(context);
+    return ret;
+}
+
+int
+fossil_ai_chat_compact(fossil_ai_chat_session_t* session) {
+    if (!session) return -1;
+    fossil_ai_jellyfish_blob_t summary = {0};
+    if (fossil_ai_chat_summarize(session, &summary) != 0) return -1;
+
+    /* Clear all previous messages */
+    free(session->messages);
+    session->messages = (fossil_ai_chat_message_t*)malloc(sizeof(fossil_ai_chat_message_t) * 8);
+    session->message_capacity = 8;
+    session->message_count = 0;
+
+    /* Add summary as system message */
+    fossil_ai_chat_add_message(session, FOSSIL_AI_CHAT_ROLE_SYSTEM, summary);
+    return 0;
+}
+
+/* ============================================================
+   Integrity & Audit
+   ============================================================ */
+
+fossil_ai_jellyfish_hash_t
+fossil_ai_chat_context_hash(fossil_ai_chat_session_t* session) {
+    fossil_ai_jellyfish_context_t* context = fossil_ai_chat_materialize_context(session);
+    if (!context) return (fossil_ai_jellyfish_hash_t){0};
+    fossil_ai_jellyfish_hash_t hash = fossil_ai_jellyfish_context_hash(context);
+    fossil_ai_jellyfish_context_destroy(context);
+    return hash;
+}
+
+fossil_ai_jellyfish_audit_t*
+fossil_ai_chat_audit_model(fossil_ai_chat_session_t* session) {
+    if (!session) return NULL;
+    return fossil_ai_jellyfish_audit(session->core, session->model->model_type);
 }

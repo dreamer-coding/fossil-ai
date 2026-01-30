@@ -27,10 +27,5 @@
 
 #include "jellyfish.h" // core AI guts
 #include "iochat.h"
-#include "data.h"
-#include "anom.h"
-#include "nlp.h"
-#include "ml.h"
-#include "ts.h"
 
 #endif /* FOSSIL_JELLYFISH_AI_FRAMEWORK_H */

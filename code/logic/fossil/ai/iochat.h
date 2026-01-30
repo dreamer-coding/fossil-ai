@@ -32,79 +32,139 @@ extern "C"
 {
 #endif
 
-/* ======================================================
- * Constants
- * ====================================================== */
+/* ============================================================
+   Chat Types
+   ============================================================ */
 
-#define FOSSIL_AI_CHAT_MAX_TOKENS 512
-#define FOSSIL_AI_CHAT_MAX_TEXT   2048
+typedef struct fossil_ai_chat_session fossil_ai_chat_session_t;
+typedef struct fossil_ai_chat_message fossil_ai_chat_message_t;
 
-/* ======================================================
- * Types
- * ====================================================== */
-
+/* Message roles */
 typedef enum {
     FOSSIL_AI_CHAT_ROLE_SYSTEM,
     FOSSIL_AI_CHAT_ROLE_USER,
-    FOSSIL_AI_CHAT_ROLE_ASSISTANT
+    FOSSIL_AI_CHAT_ROLE_ASSISTANT,
+    FOSSIL_AI_CHAT_ROLE_TOOL
 } fossil_ai_chat_role_t;
 
-typedef struct fossil_ai_chat_message_t {
+/* Chat message (immutable once added) */
+struct fossil_ai_chat_message {
     fossil_ai_chat_role_t role;
-    char text[FOSSIL_AI_CHAT_MAX_TEXT];
-    int64_t timestamp;
-} fossil_ai_chat_message_t;
+    fossil_ai_jellyfish_blob_t content;
+};
 
-typedef struct fossil_ai_chat_context_t {
-    fossil_ai_jellyfish_model_t* model;   // cold core
-    fossil_ai_chat_message_t* history;
-    size_t history_count;
-    size_t history_capacity;
-} fossil_ai_chat_context_t;
+/* ============================================================
+   Session Lifecycle
+   ============================================================ */
 
-/* ======================================================
- * Lifecycle
- * ====================================================== */
-
-fossil_ai_chat_context_t* fossil_ai_chat_create(
-    fossil_ai_jellyfish_model_t* model
+/* Create a chat session bound to a model */
+fossil_ai_chat_session_t*
+fossil_ai_chat_session_create(
+    fossil_ai_jellyfish_core_t* core,
+    fossil_ai_jellyfish_model_t* model,
+    fossil_ai_jellyfish_id_t session_id
 );
 
-void fossil_ai_chat_free(fossil_ai_chat_context_t* ctx);
+/* Destroy session (does not destroy core/model) */
+void
+fossil_ai_chat_session_destroy(
+    fossil_ai_chat_session_t* session
+);
 
-/* ======================================================
- * Messaging
- * ====================================================== */
+/* ============================================================
+   Message Handling
+   ============================================================ */
 
-bool fossil_ai_chat_add_message(
-    fossil_ai_chat_context_t* ctx,
+/* Append a message to the session history */
+int
+fossil_ai_chat_add_message(
+    fossil_ai_chat_session_t* session,
     fossil_ai_chat_role_t role,
-    const char* text,
-    int64_t timestamp
+    fossil_ai_jellyfish_blob_t content
 );
 
-/* ======================================================
- * NLP / Inference
- * ====================================================== */
-
-/* Convert text → embedding (pluggable NLP backend) */
-bool fossil_ai_chat_embed_text(
-    const char* text,
-    float* embedding_out
+/* Retrieve message count */
+unsigned long
+fossil_ai_chat_message_count(
+    const fossil_ai_chat_session_t* session
 );
 
-/* Generate assistant reply */
-bool fossil_ai_chat_reply(
-    fossil_ai_chat_context_t* ctx,
-    char* response_out,
-    size_t response_size
+/* Read-only access to a message */
+const fossil_ai_chat_message_t*
+fossil_ai_chat_get_message(
+    const fossil_ai_chat_session_t* session,
+    unsigned long index
 );
 
-/* ======================================================
- * Auditing
- * ====================================================== */
+/* ============================================================
+   Context Materialization
+   ============================================================ */
 
-void fossil_ai_chat_audit(const fossil_ai_chat_context_t* ctx);
+/*
+ * Materialize chat history into an immutable Jellyfish context.
+ * Caller owns returned context.
+ */
+fossil_ai_jellyfish_context_t*
+fossil_ai_chat_materialize_context(
+    fossil_ai_chat_session_t* session
+);
+
+/* ============================================================
+   Chat Inference
+   ============================================================ */
+
+/*
+ * Execute a chat turn.
+ * - Adds user message
+ * - Builds context
+ * - Calls jellyfish_ask
+ * - Appends assistant response
+ */
+int
+fossil_ai_chat_turn(
+    fossil_ai_chat_session_t* session,
+    const char* user_input,
+    fossil_ai_jellyfish_blob_t* assistant_output
+);
+
+/* ============================================================
+   Summarization & Compression
+   ============================================================ */
+
+/*
+ * Summarize the current chat history.
+ * Useful for long-running sessions or archival.
+ */
+int
+fossil_ai_chat_summarize(
+    fossil_ai_chat_session_t* session,
+    fossil_ai_jellyfish_blob_t* summary
+);
+
+/*
+ * Replace history with a system message containing a summary.
+ * This is a destructive operation.
+ */
+int
+fossil_ai_chat_compact(
+    fossil_ai_chat_session_t* session
+);
+
+/* ============================================================
+   Integrity & Audit
+   ============================================================ */
+
+/* Hash of the materialized chat context */
+fossil_ai_jellyfish_hash_t
+fossil_ai_chat_context_hash(
+    fossil_ai_chat_session_t* session
+);
+
+/* Audit the underlying model used in the session */
+fossil_ai_jellyfish_audit_t*
+fossil_ai_chat_audit_model(
+    fossil_ai_chat_session_t* session
+)
 
 #ifdef __cplusplus
 }

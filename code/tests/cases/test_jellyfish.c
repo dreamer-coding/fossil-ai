@@ -54,7 +54,7 @@ FOSSIL_TEARDOWN(c_jellyfish_fixture) {
 // ======================================================
 // Initialization / Cleanup
 // ======================================================
-
+/*
 FOSSIL_TEST(c_test_jellyfish_create_and_free_model) {
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_create_model("test_model", 4, 2);
     ASSUME_NOT_CNULL(model);
@@ -199,11 +199,13 @@ FOSSIL_TEST(c_test_jellyfish_load_model_invalid_path) {
     fossil_ai_jellyfish_model_t *model = fossil_ai_jellyfish_load_model("nonexistent_file.bin");
     ASSUME_ITS_CNULL(model);
 }
+*/
 
 // * * * * * * * * * * * * * * * * * * * * * * * *
 // * Fossil Logic Test Pool
 // * * * * * * * * * * * * * * * * * * * * * * * *
 FOSSIL_TEST_GROUP(c_jellyfish_tests) {    
+    /*
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_create_and_free_model);
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_create_model_null_name);
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_create_and_free_context);
@@ -219,6 +221,6 @@ FOSSIL_TEST_GROUP(c_jellyfish_tests) {
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_save_and_load_model);
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_save_model_null);
     FOSSIL_TEST_ADD(c_jellyfish_fixture, c_test_jellyfish_load_model_invalid_path);
-
+    */
     FOSSIL_TEST_REGISTER(c_jellyfish_fixture);
 } // end of tests

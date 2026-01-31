@@ -164,7 +164,7 @@ fossil_ai_chat_context_hash(
 fossil_ai_jellyfish_audit_t*
 fossil_ai_chat_audit_model(
     fossil_ai_chat_session_t* session
-)
+);
 
 #ifdef __cplusplus
 }

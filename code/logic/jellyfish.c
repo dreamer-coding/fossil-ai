@@ -194,6 +194,7 @@ void fossil_ai_jellyfish_destroy(fossil_ai_jellyfish_core_t* core){
 
 /* -- Model Management -- */
 fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_model_create(fossil_ai_jellyfish_core_t* core, fossil_ai_jellyfish_id_t model_id, fossil_ai_jellyfish_id_t model_type){
+    (void)core;
     fossil_ai_jellyfish_model_t* m=(fossil_ai_jellyfish_model_t*)malloc(sizeof(fossil_ai_jellyfish_model_t));
     m->id=fossil_ai_jellyfish_strdup(model_id);
     m->type=fossil_ai_jellyfish_strdup(model_type);
@@ -201,6 +202,7 @@ fossil_ai_jellyfish_model_t* fossil_ai_jellyfish_model_create(fossil_ai_jellyfis
     return m;
 }
 void fossil_ai_jellyfish_model_destroy(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_model_t* model){
+    (void)core;
     if(!model) return;
     free(model->id);
     free(model->type);
@@ -209,6 +211,7 @@ void fossil_ai_jellyfish_model_destroy(fossil_ai_jellyfish_core_t* core,fossil_a
 
 /* -- Context -- */
 fossil_ai_jellyfish_context_t* fossil_ai_jellyfish_context_create(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_id_t context_id){
+    (void)core;
     fossil_ai_jellyfish_context_t* ctx=(fossil_ai_jellyfish_context_t*)malloc(sizeof(fossil_ai_jellyfish_context_t));
     ctx->id=fossil_ai_jellyfish_strdup(context_id);
     ctx->blobs=NULL;
@@ -245,6 +248,7 @@ void fossil_ai_jellyfish_context_destroy(fossil_ai_jellyfish_context_t* ctx){
 
 /* -- Audit -- */
 fossil_ai_jellyfish_audit_t* fossil_ai_jellyfish_audit(fossil_ai_jellyfish_core_t* core,fossil_ai_jellyfish_id_t target_id){
+    (void)core;
     fossil_ai_jellyfish_audit_t* a=(fossil_ai_jellyfish_audit_t*)malloc(sizeof(fossil_ai_jellyfish_audit_t));
     a->target_id=fossil_ai_jellyfish_strdup(target_id);
     a->hash=compute_sha256(target_id,strlen(target_id));

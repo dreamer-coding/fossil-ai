@@ -25,7 +25,11 @@
 #ifndef FOSSIL_JELLYFISH_AI_FRAMEWORK_H
 #define FOSSIL_JELLYFISH_AI_FRAMEWORK_H
 
-#include "jellyfish.h" // core AI guts
-#include "iochat.h"
+#include "kernal.h"
+#include "train.h"
+#include "model.h"
+#include "infer.h"
+#include "audit.h"
+#include "chat.h"
 
 #endif /* FOSSIL_JELLYFISH_AI_FRAMEWORK_H */

@@ -3,7 +3,14 @@ cc = meson.get_compiler('c')
 
 
 fossil_ai_lib = library('fossil_ai',
-    files('jellyfish.c', 'iochat.c'),
+    files(
+        'kernal.c',
+        'model.c',
+        'audit.c',
+        'infer.c',
+        'train.c',
+        'chat.c'
+    ),
     install: true,
     dependencies: [cc.find_library('m', required: false)],
     include_directories: dir)

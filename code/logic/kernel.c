@@ -24,207 +24,183 @@
  */
 #include "fossil/ai/kernal.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
-#include <windows.h>
-#else
-#include <pthread.h>
-#include <unistd.h>
-#endif
+/* =========================================================
+ * Internal State
+ * ========================================================= */
 
-/* ---------------------------------------------------------
- * Internal Types
- * --------------------------------------------------------- */
-
-typedef struct fossil_ai_task_s {
-    void* data;
-    struct fossil_ai_task_s* next;
-} fossil_ai_task_t;
-
-typedef struct fossil_ai_model_node_s {
+typedef struct fossil_ai_model_node {
     void* model;
-    struct fossil_ai_model_node_s* next;
+    struct fossil_ai_model_node* next;
 } fossil_ai_model_node_t;
 
-typedef struct fossil_ai_kernel_ctx_s {
+static struct {
+    int initialized;
     fossil_ai_model_node_t* models;
-    fossil_ai_task_t* task_head;
-    fossil_ai_task_t* task_tail;
-#if defined(_WIN32)
-    CRITICAL_SECTION lock;
-#else
-    pthread_mutex_t lock;
-#endif
-} fossil_ai_kernel_ctx_t;
+    size_t model_count;
+    size_t steps_executed;
+} g_kernel = {0};
 
-static fossil_ai_kernel_ctx_t g_kernel = {0};
 
-/* ---------------------------------------------------------
- * Lock helpers
- * --------------------------------------------------------- */
+/* =========================================================
+ * Helpers
+ * ========================================================= */
 
-static void kernel_lock() {
-#if defined(_WIN32)
-    EnterCriticalSection(&g_kernel.lock);
-#else
-    pthread_mutex_lock(&g_kernel.lock);
-#endif
+static fossil_ai_model_node_t* find_model(void* model, fossil_ai_model_node_t** prev)
+{
+    fossil_ai_model_node_t* p = g_kernel.models;
+    fossil_ai_model_node_t* last = NULL;
+
+    while (p) {
+        if (p->model == model) {
+            if (prev) *prev = last;
+            return p;
+        }
+        last = p;
+        p = p->next;
+    }
+    return NULL;
 }
 
-static void kernel_unlock() {
-#if defined(_WIN32)
-    LeaveCriticalSection(&g_kernel.lock);
-#else
-    pthread_mutex_unlock(&g_kernel.lock);
-#endif
-}
 
-/* ---------------------------------------------------------
- * Kernel Init / Shutdown
- * --------------------------------------------------------- */
+/* =========================================================
+ * Lifecycle
+ * ========================================================= */
 
-int fossil_ai_kernel_init(void) {
+int fossil_ai_kernel_init(void)
+{
+    if (g_kernel.initialized)
+        return 0;
+
     memset(&g_kernel, 0, sizeof(g_kernel));
-#if defined(_WIN32)
-    InitializeCriticalSection(&g_kernel.lock);
-#else
-    if (pthread_mutex_init(&g_kernel.lock, NULL) != 0) return -1;
-#endif
+    g_kernel.initialized = 1;
     return 0;
 }
 
-int fossil_ai_kernel_shutdown(void) {
-    kernel_lock();
+int fossil_ai_kernel_shutdown(void)
+{
+    if (!g_kernel.initialized)
+        return -1;
 
-    /* Free all tasks */
-    fossil_ai_task_t* t = g_kernel.task_head;
-    while (t) {
-        fossil_ai_task_t* next = t->next;
-        free(t);
-        t = next;
+    fossil_ai_model_node_t* p = g_kernel.models;
+    while (p) {
+        fossil_ai_model_node_t* next = p->next;
+        free(p);
+        p = next;
     }
-    g_kernel.task_head = g_kernel.task_tail = NULL;
 
-    /* Free all models */
-    fossil_ai_model_node_t* m = g_kernel.models;
-    while (m) {
-        fossil_ai_model_node_t* next = m->next;
-        free(m);
-        m = next;
-    }
-    g_kernel.models = NULL;
-
-    kernel_unlock();
-#if defined(_WIN32)
-    DeleteCriticalSection(&g_kernel.lock);
-#else
-    pthread_mutex_destroy(&g_kernel.lock);
-#endif
+    memset(&g_kernel, 0, sizeof(g_kernel));
     return 0;
 }
 
-/* ---------------------------------------------------------
- * Model Registration
- * --------------------------------------------------------- */
 
-int fossil_ai_kernel_register_model(void* model) {
-    if (!model) return -1;
-    fossil_ai_model_node_t* node = (fossil_ai_model_node_t*)malloc(sizeof(fossil_ai_model_node_t));
-    if (!node) return -2;
+/* =========================================================
+ * Model Management
+ * ========================================================= */
+
+int fossil_ai_kernel_register_model(void* model)
+{
+    if (!g_kernel.initialized || !model)
+        return -1;
+
+    if (find_model(model, NULL))
+        return 1; /* already registered */
+
+    fossil_ai_model_node_t* node =
+        (fossil_ai_model_node_t*)malloc(sizeof(*node));
+    if (!node)
+        return -2;
+
     node->model = model;
-    node->next = NULL;
-
-    kernel_lock();
     node->next = g_kernel.models;
     g_kernel.models = node;
-    kernel_unlock();
+    g_kernel.model_count++;
+
     return 0;
 }
 
-int fossil_ai_kernel_unregister_model(void* model) {
-    if (!model) return -1;
-    kernel_lock();
+int fossil_ai_kernel_unregister_model(void* model)
+{
+    if (!g_kernel.initialized || !model)
+        return -1;
+
     fossil_ai_model_node_t* prev = NULL;
-    fossil_ai_model_node_t* curr = g_kernel.models;
-    while (curr) {
-        if (curr->model == model) {
-            if (prev) prev->next = curr->next;
-            else g_kernel.models = curr->next;
-            free(curr);
-            kernel_unlock();
-            return 0;
-        }
-        prev = curr;
-        curr = curr->next;
-    }
-    kernel_unlock();
-    return -2; /* not found */
-}
+    fossil_ai_model_node_t* node = find_model(model, &prev);
+    if (!node)
+        return 1;
 
-/* ---------------------------------------------------------
- * Task Queue
- * --------------------------------------------------------- */
+    if (prev)
+        prev->next = node->next;
+    else
+        g_kernel.models = node->next;
 
-int fossil_ai_kernel_run(void* task_data) {
-    if (!task_data) return -1;
-    fossil_ai_task_t* task = (fossil_ai_task_t*)malloc(sizeof(fossil_ai_task_t));
-    if (!task) return -2;
-    task->data = task_data;
-    task->next = NULL;
-
-    kernel_lock();
-    if (g_kernel.task_tail) g_kernel.task_tail->next = task;
-    else g_kernel.task_head = task;
-    g_kernel.task_tail = task;
-    kernel_unlock();
+    free(node);
+    g_kernel.model_count--;
     return 0;
 }
 
-int fossil_ai_kernel_step(void) {
-    kernel_lock();
-    fossil_ai_task_t* task = g_kernel.task_head;
-    if (!task) {
-        kernel_unlock();
-        return -1; /* no task */
-    }
-    g_kernel.task_head = task->next;
-    if (!g_kernel.task_head) g_kernel.task_tail = NULL;
-    kernel_unlock();
 
-    /* Execute the task: user-defined pointer, cast as needed */
-    // For now, assume task->data is a function pointer
-    void (*fn)(void) = (void(*)(void))task->data;
-    if (fn) fn();
+/* =========================================================
+ * Execution
+ * ========================================================= */
 
-    free(task);
+int fossil_ai_kernel_run(void* task)
+{
+    if (!g_kernel.initialized)
+        return -1;
+
+    /* Placeholder execution logic
+       Later you could dispatch this to schedulers,
+       models, or pipelines */
+    (void)task;
+
+    /* For now just perform a step */
+    return fossil_ai_kernel_step();
+}
+
+int fossil_ai_kernel_step(void)
+{
+    if (!g_kernel.initialized)
+        return -1;
+
+    /* In a real kernel:
+       iterate models and update them */
+    g_kernel.steps_executed++;
     return 0;
 }
 
-/* ---------------------------------------------------------
+
+/* =========================================================
  * Audit & Introspection
- * --------------------------------------------------------- */
+ * ========================================================= */
 
-int fossil_ai_kernel_audit_snapshot(void* out) {
-    if (!out) return -1;
-    kernel_lock();
-    fossil_ai_model_node_t* m = g_kernel.models;
-    size_t count = 0;
-    while (m) { count++; m = m->next; }
-    *((size_t*)out) = count;
-    kernel_unlock();
+typedef struct fossil_ai_kernel_snapshot {
+    size_t model_count;
+    size_t steps_executed;
+    int initialized;
+} fossil_ai_kernel_snapshot_t;
+
+int fossil_ai_kernel_audit_snapshot(void* out)
+{
+    if (!g_kernel.initialized || !out)
+        return -1;
+
+    fossil_ai_kernel_snapshot_t* snap =
+        (fossil_ai_kernel_snapshot_t*)out;
+
+    snap->model_count = g_kernel.model_count;
+    snap->steps_executed = g_kernel.steps_executed;
+    snap->initialized = g_kernel.initialized;
+
     return 0;
 }
 
-int fossil_ai_kernel_introspect(void* out) {
-    if (!out) return -1;
-    kernel_lock();
-    fossil_ai_task_t* t = g_kernel.task_head;
-    size_t count = 0;
-    while (t) { count++; t = t->next; }
-    *((size_t*)out) = count;
-    kernel_unlock();
-    return 0;
+int fossil_ai_kernel_introspect(void* out)
+{
+    /* For now this just mirrors snapshot.
+       Later this could expose queues,
+       scheduler info, memory stats, etc. */
+    return fossil_ai_kernel_audit_snapshot(out);
 }
